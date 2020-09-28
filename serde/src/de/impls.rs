@@ -1,7 +1,8 @@
 use lib::*;
 
 use de::{
-    Deserialize, Deserializer, EnumAccess, Error, SeqAccess, Unexpected, VariantAccess, Visitor,
+    Deserialize, DeserializeEmbed, Deserializer, EnumAccess, Error, SeqAccess, Storage, Unexpected,
+    VariantAccess, Visitor,
 };
 
 #[cfg(any(feature = "std", feature = "alloc", not(no_core_duration)))]
@@ -14,7 +15,7 @@ use __private::size_hint;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct UnitVisitor;
+pub struct UnitVisitor;
 
 impl<'de> Visitor<'de> for UnitVisitor {
     type Value = ();
@@ -31,12 +32,52 @@ impl<'de> Visitor<'de> for UnitVisitor {
     }
 }
 
+impl<'de> Storage<'de> for UnitVisitor {
+    type Key = ();
+
+    #[inline]
+    fn is_known(_key: &Self::Key) -> bool {
+        true
+    }
+
+    #[inline]
+    fn consume_value<A>(&mut self, _key: Self::Key, map: A) -> Result<A, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        Ok(map)
+    }
+}
+
 impl<'de> Deserialize<'de> for () {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         deserializer.deserialize_unit(UnitVisitor)
+    }
+}
+
+impl<'de> DeserializeEmbed<'de> for () {
+    type Storage = UnitVisitor;
+    type KeyVisitor = UnitVisitor;
+
+    #[inline]
+    fn new_storage() -> Self::Storage {
+        UnitVisitor
+    }
+
+    #[inline]
+    fn new_visitor() -> Self::KeyVisitor {
+        UnitVisitor
+    }
+
+    #[inline]
+    fn deserialize_embed<E>(_storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error,
+    {
+        Ok(())
     }
 }
 
@@ -822,6 +863,32 @@ where
     // deserialize_in_place the value is profitable (probably data-dependent?)
 }
 
+impl<'de, T> DeserializeEmbed<'de> for Option<T>
+where
+    T: DeserializeEmbed<'de>,
+{
+    type Storage = T::Storage;
+    type KeyVisitor = T::KeyVisitor;
+
+    #[inline]
+    fn new_storage() -> Self::Storage {
+        T::new_storage()
+    }
+
+    #[inline]
+    fn new_visitor() -> Self::KeyVisitor {
+        T::new_visitor()
+    }
+
+    #[inline]
+    fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error,
+    {
+        Ok(T::deserialize_embed::<E>(storage).ok())
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 struct PhantomDataVisitor<T: ?Sized> {
@@ -1420,6 +1487,112 @@ map_impl!(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// Implements [`DeserializeEmbed`] for maps.
+///
+/// Example:
+/// ```ignore
+/// impl_deserialize_embed_for_map!(pub BTreeMap<K: Ord, V>, BTreeMapStorage);
+/// ```
+///
+/// # Parameters
+/// - `vis`: visibility marker. [`Storage`] struct will be declared with such visibility
+/// - `map<K, V>`: name of map struct, followed by template parameters for keys
+///   and values, optionally constrained by bounds. Any number of additional
+///   parameters also permitted
+/// - `storage`: name of generated structure for intermediate storage of values,
+///   extracted from the map
+///
+/// [`DeserializeEmbed`]: ./trait.DeserializeEmbed.html
+/// [`Storage`]: ./trait.Storage.html
+#[macro_export(local_inner_macros)]
+macro_rules! impl_deserialize_embed_for_map {
+    (
+        $vis:vis
+        $map:ident < $k:ident $(: $kbound1:ident $(+ $kbound2:ident)*)*, $v:ident $(, $typaram:ident : $bound1:ident $(+ $bound2:ident)*)* >,
+        $storage:ident
+    ) => {
+        $vis struct $storage<$k, $v $(, $typaram)*>($map<$k, $v $(, $typaram)*>);
+
+        impl<$k, $v $(, $typaram)*> Default for $storage<$k, $v $(, $typaram)*>
+        where
+            $k $(: $kbound1 $(+ $kbound2)*)*,
+            $($typaram: $bound1 $(+ $bound2)*),*
+        {
+            fn default() -> Self { Self(Default::default()) }
+        }
+
+        impl<'de, $k, $v $(, $typaram)*> Visitor<'de> for $storage<$k, $v $(, $typaram)*>
+        where
+            $k: Deserialize<'de> $(+ $kbound1 $(+ $kbound2)*)*,
+            $($typaram: $bound1 $(+ $bound2)*),*
+        {
+            type Value = $k;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a map key")
+            }
+            //TODO: Implement visitor
+        }
+
+        impl<'de, $k, $v $(, $typaram)*> Storage<'de> for $storage<$k, $v $(, $typaram)*>
+        where
+            $k: Deserialize<'de> $(+ $kbound1 $(+ $kbound2)*)*,
+            $v: Deserialize<'de>,
+            $($typaram: $bound1 $(+ $bound2)*),*
+        {
+            type Key = $k;
+
+            #[inline]
+            fn is_known(_key: &Self::Key) -> bool { true }
+
+            #[inline]
+            fn consume_value<A>(&mut self, key: Self::Key, mut map: A) -> Result<A, A::Error>
+            where
+                A: MapAccess<'de>
+            {
+                self.0.insert(key, map.next_value()?);
+                Ok(map)
+            }
+        }
+
+        impl<'de, $k, $v $(, $typaram)*> DeserializeEmbed<'de> for $map<$k, $v $(, $typaram)*>
+        where
+            $k: Deserialize<'de> $(+ $kbound1 $(+ $kbound2)*)*,
+            $v: Deserialize<'de>,
+            $($typaram: $bound1 $(+ $bound2)*),*
+        {
+            type Storage = $storage<$k, $v $(, $typaram)*>;
+            type KeyVisitor = $storage<$k, $v $(, $typaram)*>;
+
+            #[inline]
+            fn new_storage() -> Self::Storage {
+                Self::KeyVisitor::default()
+            }
+
+            #[inline]
+            fn new_visitor() -> Self::KeyVisitor {
+                Self::KeyVisitor::default()
+            }
+
+            #[inline]
+            fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+            where
+                E: Error,
+            {
+                Ok(storage.0)
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl_deserialize_embed_for_map!(pub BTreeMap<K: Ord, V>, BTreeMapStorage);
+
+#[cfg(feature = "std")]
+impl_deserialize_embed_for_map!(pub HashMap<K: Eq + Hash, V>, HashMapStorage);
+
+////////////////////////////////////////////////////////////////////////////////
+
 #[cfg(feature = "std")]
 macro_rules! parse_ip_impl {
     ($expecting:tt $ty:ty; $size:tt) => {
@@ -1834,6 +2007,34 @@ where
     }
 }
 
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, 'a, T> DeserializeEmbed<'de> for Cow<'a, T>
+where
+    T: ToOwned,
+    T::Owned: DeserializeEmbed<'de>,
+{
+    type Storage = <T::Owned as DeserializeEmbed<'de>>::Storage;
+    type KeyVisitor = <T::Owned as DeserializeEmbed<'de>>::KeyVisitor;
+
+    #[inline]
+    fn new_storage() -> Self::Storage {
+        <T::Owned as DeserializeEmbed<'de>>::new_storage()
+    }
+
+    #[inline]
+    fn new_visitor() -> Self::KeyVisitor {
+        <T::Owned as DeserializeEmbed<'de>>::new_visitor()
+    }
+
+    #[inline]
+    fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error,
+    {
+        T::Owned::deserialize_embed(storage).map(Cow::Owned)
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// This impl requires the [`"rc"`] Cargo feature of Serde. The resulting
@@ -1841,7 +2042,7 @@ where
 ///
 /// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
 #[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
-impl<'de, T: ?Sized> Deserialize<'de> for RcWeak<T>
+impl<'de, T> Deserialize<'de> for RcWeak<T>
 where
     T: Deserialize<'de>,
 {
@@ -1859,7 +2060,39 @@ where
 ///
 /// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
 #[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
-impl<'de, T: ?Sized> Deserialize<'de> for ArcWeak<T>
+impl<'de, T> DeserializeEmbed<'de> for RcWeak<T>
+where
+    T: DeserializeEmbed<'de>,
+{
+    type Storage = T::Storage;
+    type KeyVisitor = T::KeyVisitor;
+
+    #[inline]
+    fn new_storage() -> Self::Storage {
+        T::new_storage()
+    }
+
+    #[inline]
+    fn new_visitor() -> Self::KeyVisitor {
+        T::new_visitor()
+    }
+
+    #[inline]
+    fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error,
+    {
+        try!(Option::<T>::deserialize_embed(storage));
+        Ok(RcWeak::new())
+    }
+}
+
+/// This impl requires the [`"rc"`] Cargo feature of Serde. The resulting
+/// `Weak<T>` has a reference count of 0 and cannot be upgraded.
+///
+/// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
+#[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
+impl<'de, T> Deserialize<'de> for ArcWeak<T>
 where
     T: Deserialize<'de>,
 {
@@ -1868,6 +2101,38 @@ where
         D: Deserializer<'de>,
     {
         try!(Option::<T>::deserialize(deserializer));
+        Ok(ArcWeak::new())
+    }
+}
+
+/// This impl requires the [`"rc"`] Cargo feature of Serde. The resulting
+/// `Weak<T>` has a reference count of 0 and cannot be upgraded.
+///
+/// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
+#[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
+impl<'de, T> DeserializeEmbed<'de> for ArcWeak<T>
+where
+    T: DeserializeEmbed<'de>,
+{
+    type Storage = T::Storage;
+    type KeyVisitor = T::KeyVisitor;
+
+    #[inline]
+    fn new_storage() -> Self::Storage {
+        T::new_storage()
+    }
+
+    #[inline]
+    fn new_visitor() -> Self::KeyVisitor {
+        T::new_visitor()
+    }
+
+    #[inline]
+    fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error,
+    {
+        try!(Option::<T>::deserialize_embed(storage));
         Ok(ArcWeak::new())
     }
 }
@@ -1894,6 +2159,33 @@ macro_rules! box_forwarded_impl {
                 D: Deserializer<'de>,
             {
                 Box::deserialize(deserializer).map(Into::into)
+            }
+        }
+
+        $(#[doc = $doc])*
+        impl<'de, T> DeserializeEmbed<'de> for $t<T>
+        where
+            Box<T>: DeserializeEmbed<'de>,
+        {
+            type Storage = <Box<T> as DeserializeEmbed<'de>>::Storage;
+            type KeyVisitor = <Box<T> as DeserializeEmbed<'de>>::KeyVisitor;
+
+            #[inline]
+            fn new_storage() -> Self::Storage {
+                <Box<T> as DeserializeEmbed<'de>>::new_storage()
+            }
+
+            #[inline]
+            fn new_visitor() -> Self::KeyVisitor {
+                <Box<T> as DeserializeEmbed<'de>>::new_visitor()
+            }
+
+            #[inline]
+            fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+            where
+                E: Error,
+            {
+                Box::deserialize_embed(storage).map(Into::into)
             }
         }
     };
@@ -1942,6 +2234,32 @@ where
         D: Deserializer<'de>,
     {
         T::deserialize(deserializer).map(Cell::new)
+    }
+}
+
+impl<'de, T> DeserializeEmbed<'de> for Cell<T>
+where
+    T: DeserializeEmbed<'de> + Copy,
+{
+    type Storage = T::Storage;
+    type KeyVisitor = T::KeyVisitor;
+
+    #[inline]
+    fn new_storage() -> Self::Storage {
+        T::new_storage()
+    }
+
+    #[inline]
+    fn new_visitor() -> Self::KeyVisitor {
+        T::new_visitor()
+    }
+
+    #[inline]
+    fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error,
+    {
+        T::deserialize_embed(storage).map(Cell::new)
     }
 }
 
@@ -2658,6 +2976,33 @@ where
         D: Deserializer<'de>,
     {
         Deserialize::deserialize(deserializer).map(Wrapping)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<'de, T> DeserializeEmbed<'de> for Wrapping<T>
+where
+    T: DeserializeEmbed<'de>,
+{
+    type Storage = T::Storage;
+    type KeyVisitor = T::KeyVisitor;
+
+    #[inline]
+    fn new_storage() -> Self::Storage {
+        T::new_storage()
+    }
+
+    #[inline]
+    fn new_visitor() -> Self::KeyVisitor {
+        T::new_visitor()
+    }
+
+    #[inline]
+    fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error,
+    {
+        T::deserialize_embed(storage).map(Wrapping)
     }
 }
 

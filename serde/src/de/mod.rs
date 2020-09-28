@@ -790,6 +790,116 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// A data structure that can be represented in the parent structure as part
+/// of that structure, without explicit indication of beginning and ending of its
+/// boundaries. Only such structures can be used with `#[serde(flatten)]` attribute.
+///
+/// When deserialized, embedded types created with help of their builders. Associated
+/// type `Storage` is responsible to hold all intermediate data fields of the type
+/// until all values will be consumed from the shared map, that holds fields of parent
+/// and embedded types.
+///
+/// # Derive implementation
+/// When derived with `#[derive(Deserialize)]`, that trait is implemented for structs.
+///
+/// This trait has special implementation for the [`HashMap`] and the [`BTreeMap`],
+/// allowing them to consume all fields, that do not be consumed by named fields
+/// of struct. Be noted, that if your type contains `#[serde(flatten)]` struct and
+/// the map, then map field should be the last field, because derived implementation
+/// try to supply fields to each embedded fields in that order in which their is
+/// declared in the struct, and so how maps always consumes all keys, all following
+/// fields after the map won't get anything.
+///
+/// Another consequence of this implementation is that if you contain embedded maps
+/// in both parent and embedded struct, all unknown keys go to the internal map:
+///
+/// ```edition2018,no_run
+/// # use std::collections::HashMap;
+/// # use serde::Deserialize;
+/// # mod serde_json { pub fn from_str<T>(_: &str) -> Result<T, ()> { unreachable!() } }
+/// #[derive(Debug, Deserialize, PartialEq)]
+/// struct Parent {
+///     #[serde(flatten)]
+///     field: Embedded,
+///     #[serde(flatten)]
+///     outer: HashMap<String, u32>,
+/// }
+/// #[derive(Debug, Deserialize, PartialEq)]
+/// struct Embedded {
+///     #[serde(flatten)]
+///     inner: HashMap<String, u32>,
+/// }
+///
+/// let data: Parent = serde_json::from_str(r#"{ "answer": 42 }"#).unwrap();
+/// assert_eq!(data, Parent {
+///     field: Embedded {
+///         inner: [("answer".to_string(), 42)].iter().cloned().collect()
+///     },
+///     outer: HashMap::new(),
+/// });
+/// ```
+///
+/// [`HashMap`]: https://doc.rust-lang.org/std/collections/struct.HashMap.html
+/// [`BTreeMap`]: https://doc.rust-lang.org/std/collections/struct.BTreeMap.html
+pub trait DeserializeEmbed<'de>: Sized {
+    /// Type used to collect fields during deserialization
+    type Storage: Storage<'de>;
+    /// Type for fields identifiers extraction
+    type KeyVisitor: Visitor<'de, Value = <Self::Storage as Storage<'de>>::Key>;
+
+    /// Creates the new storage, that will be used to collect fields of that type.
+    fn new_storage() -> Self::Storage;
+
+    /// Creates the new visitor, that will be used to collect fields of that type.
+    fn new_visitor() -> Self::KeyVisitor;
+
+    /// Creates final value from intermediate representation stored in `storage`.
+    ///
+    /// Building value can perform checks, such as presence of all fields and
+    /// absence of duplicated fields.
+    ///
+    /// # Derive implementation
+    /// When derived, this method checks, that all fields present. Checking for
+    /// duplicating fields performed in the [`consume_value()`] method.
+    ///
+    /// [`consume_value()`]: ./trait.Storage.html#tymethod.consume_value
+    fn deserialize_embed<E>(storage: Self::Storage) -> Result<Self, E>
+    where
+        E: Error;
+}
+
+/// Storage to temporary store components of a deserializable type.
+///
+/// Storage is created by calling the [`new_storage()`] method of the `DeserializeEmbed`
+/// trait and destructed after calling [`deserialize_embed()`] method. Between that two
+/// points all needed fields must be supplied to the storage by calling [`consume_value()`]
+/// method.
+///
+/// [`new_storage()`]: ./trait.DeserializeEmbed.html#tymethod.new_storage
+/// [`deserialize_embed()`]: ./trait.DeserializeEmbed.html#tymethod.deserialize_embed
+/// [`consume_value()`]: ./trait.Storage.html#tymethod.consume_value
+/// [`Visitor`]: ./trait.Visitor.html
+pub trait Storage<'de> {
+    /// Type for field identifier of structure for which this object is intermediate
+    /// storage. Usually it is implemented as an enum
+    type Key;
+
+    /// Checks, that the key is known
+    fn is_known(key: &Self::Key) -> bool;
+
+    /// Try to extract value for given `key` from the `map`, returns the same map
+    /// in case of success.
+    ///
+    /// # Derive implementation
+    /// When derived, this method checks, that consumed fields doesn't have duplicates,
+    /// ie. each `key`, supplied to this method, is unique.
+    fn consume_value<A>(&mut self, key: Self::Key, map: A) -> Result<A, A::Error>
+    where
+        A: MapAccess<'de>;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// A **data format** that can deserialize any data structure supported by
 /// Serde.
 ///
