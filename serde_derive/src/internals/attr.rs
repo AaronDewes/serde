@@ -220,6 +220,8 @@ pub struct Container {
     type_into: Option<syn::Type>,
     remote: Option<syn::Path>,
     identifier: Identifier,
+    /// `true` if structure or enum contains at least one field with
+    /// `#[serde(flatten)]` attribute
     has_flatten: bool,
     serde_path: Option<syn::Path>,
     is_packed: bool,

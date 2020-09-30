@@ -106,6 +106,7 @@ fn precondition_no_de_lifetime(cx: &Ctxt, cont: &Container) {
     }
 }
 
+/// Information about type being deserialized
 struct Parameters {
     /// Name of the type the `derive` is on.
     local: syn::Ident,
@@ -159,9 +160,9 @@ impl Parameters {
     }
 }
 
-// All the generics in the input, plus a bound `T: Deserialize` for each generic
-// field type that will be deserialized by us, plus a bound `T: Default` for
-// each generic field type that will be set to a default value.
+/// All the generics in the input, plus a bound `T: Deserialize` for each generic
+/// field type that will be deserialized by us, plus a bound `T: Default` for
+/// each generic field type that will be set to a default value.
 fn build_generics(cont: &Container, borrowed: &BorrowedLifetimes) -> syn::Generics {
     let generics = bound::without_defaults(cont.generics);
 
@@ -200,12 +201,12 @@ fn build_generics(cont: &Container, borrowed: &BorrowedLifetimes) -> syn::Generi
     }
 }
 
-// Fields with a `skip_deserializing` or `deserialize_with` attribute, or which
-// belong to a variant with a `skip_deserializing` or `deserialize_with`
-// attribute, are not deserialized by us so we do not generate a bound. Fields
-// with a `bound` attribute specify their own bound so we do not generate one.
-// All other fields may need a `T: Deserialize` bound where T is the type of the
-// field.
+/// Fields with a `skip_deserializing` or `deserialize_with` attribute, or which
+/// belong to a variant with a `skip_deserializing` or `deserialize_with`
+/// attribute, are not deserialized by us so we do not generate a bound. Fields
+/// with a `bound` attribute specify their own bound so we do not generate one.
+/// All other fields may need a `T: Deserialize` bound where T is the type of the
+/// field.
 fn needs_deserialize_bound(field: &attr::Field, variant: Option<&attr::Variant>) -> bool {
     !field.skip_deserializing()
         && field.deserialize_with().is_none()
@@ -217,8 +218,7 @@ fn needs_deserialize_bound(field: &attr::Field, variant: Option<&attr::Variant>)
         })
 }
 
-// Fields with a `default` attribute (not `default=...`), and fields with a
-// `skip_deserializing` attribute that do not also have `default=...`.
+/// Fields with a `default` attribute (not `default=...`).
 fn requires_default(field: &attr::Field, _variant: Option<&attr::Variant>) -> bool {
     if let attr::Default::Default = *field.default() {
         true
@@ -253,15 +253,17 @@ impl BorrowedLifetimes {
     }
 }
 
-// The union of lifetimes borrowed by each field of the container.
-//
-// These turn into bounds on the `'de` lifetime of the Deserialize impl. If
-// lifetimes `'a` and `'b` are borrowed but `'c` is not, the impl is:
-//
-//     impl<'de: 'a + 'b, 'a, 'b, 'c> Deserialize<'de> for S<'a, 'b, 'c>
-//
-// If any borrowed lifetime is `'static`, then `'de: 'static` would be redundant
-// and we use plain `'static` instead of `'de`.
+/// The union of lifetimes borrowed by each field of the container.
+///
+/// These turn into bounds on the `'de` lifetime of the Deserialize impl. If
+/// lifetimes `'a` and `'b` are borrowed but `'c` is not, the impl is:
+///
+/// ```ignore
+///     impl<'de: 'a + 'b, 'a, 'b, 'c> Deserialize<'de> for S<'a, 'b, 'c>
+/// ```
+///
+/// If any borrowed lifetime is `'static`, then `'de: 'static` would be redundant
+/// and we use plain `'static` instead of `'de`.
 fn borrowed_lifetimes(cont: &Container) -> BorrowedLifetimes {
     let mut lifetimes = BTreeSet::new();
     for field in cont.data.all_fields() {
@@ -276,6 +278,11 @@ fn borrowed_lifetimes(cont: &Container) -> BorrowedLifetimes {
     }
 }
 
+/// Generates `Deserialize::deserialize` body.
+///
+/// # Parameters
+/// - `cont`: Description of type being deserialized
+/// - `params`: Another inferred information of type being deserialized
 fn deserialize_body(cont: &Container, params: &Parameters) -> Fragment {
     if cont.attrs.transparent() {
         deserialize_transparent(cont, params)
@@ -352,6 +359,7 @@ fn deserialize_in_place_body(_cont: &Container, _params: &Parameters) -> Option<
     None
 }
 
+/// Generates `Deserialize::deserialize` body for a type with `#[serde(transparent)]` attribute.
 fn deserialize_transparent(cont: &Container, params: &Parameters) -> Fragment {
     let fields = match &cont.data {
         Data::Struct(_, fields) => fields,
@@ -390,6 +398,7 @@ fn deserialize_transparent(cont: &Container, params: &Parameters) -> Fragment {
     }
 }
 
+/// Generates `Deserialize::deserialize` body for a type with `#[serde(from = ...)]` attribute.
 fn deserialize_from(type_from: &syn::Type) -> Fragment {
     quote_block! {
         _serde::__private::Result::map(
@@ -398,6 +407,7 @@ fn deserialize_from(type_from: &syn::Type) -> Fragment {
     }
 }
 
+/// Generates `Deserialize::deserialize` body for a type with `#[serde(try_from = ...)]` attribute.
 fn deserialize_try_from(type_try_from: &syn::Type) -> Fragment {
     quote_block! {
         _serde::__private::Result::and_then(
@@ -406,6 +416,9 @@ fn deserialize_try_from(type_try_from: &syn::Type) -> Fragment {
     }
 }
 
+/// Generates `Deserialize::deserialize` body for an unit struct.
+///
+/// Object is created when deserializer calls `Visitor::visit_unit` method.
 fn deserialize_unit_struct(params: &Parameters, cattrs: &attr::Container) -> Fragment {
     let this = &params.this;
     let type_name = cattrs.name().deserialize_name();
@@ -473,6 +486,8 @@ fn deserialize_unit_struct(params: &Parameters, cattrs: &attr::Container) -> Fra
     }
 }
 
+/// Generates `Deserialize::deserialize` body for a tuple struct, a newtype struct
+/// or a tuple variant of an enum.
 fn deserialize_tuple(
     variant_ident: Option<&syn::Ident>,
     params: &Parameters,
@@ -928,6 +943,7 @@ enum Untagged {
     No,
 }
 
+/// Generates `Deserialize::deserialize` body for a struct or struct variant of enum.
 fn deserialize_struct(
     prefix: &str,
     variant_ident: Option<&syn::Ident>,
@@ -1238,6 +1254,8 @@ fn deserialize_struct_in_place(
     })
 }
 
+/// Generates `Deserialize::deserialize` body for an enum which hasn't
+/// `#[serde(field_identifier)]` or `#[serde(variant_identifier)]` attributes.
 fn deserialize_enum(
     prefix: &str,
     params: &Parameters,
@@ -1258,6 +1276,17 @@ fn deserialize_enum(
     }
 }
 
+/// Generates visitor for deserializing variant identifiers.
+///
+/// # Parameters
+/// - `variants`: list of all variants (skipped also included)
+/// - `cattrs`: attributes of enum being deserialized
+///
+/// Returns tuple:
+/// - `VARIANTS` const with names of all enum variants
+/// - enum `Field` that represents each variant and struct `FieldVisitor`
+///   to parse that struct. Generated code equivalent to result of
+///   `#[serde(variant_identifier)]` attribute
 fn prepare_enum_variant_enum(
     prefix: &str,
     variants: &[Variant],
@@ -2155,8 +2184,8 @@ fn deserialize_generated_identifier(
     }
 }
 
-// Generates `Deserialize::deserialize` body for an enum with
-// `serde(field_identifier)` or `serde(variant_identifier)` attribute.
+/// Generates `Deserialize::deserialize` body for an enum with
+/// `serde(field_identifier)` or `serde(variant_identifier)` attribute.
 fn deserialize_custom_identifier(
     params: &Parameters,
     variants: &[Variant],
@@ -2267,6 +2296,7 @@ fn deserialize_custom_identifier(
     }
 }
 
+/// Generates content of `Visitor` implementation for `FieldVisitor`s
 fn deserialize_identifier(
     this: &TokenStream,
     fields: &[(String, Ident, Vec<String>)],
@@ -2612,6 +2642,7 @@ fn deserialize_struct_as_map_visitor(
     (field_visitor, None)
 }
 
+/// Generates `Visitor::visit_map` body for a struct deserializer.
 fn deserialize_map(
     field_struct_name: Ident,
     struct_path: &TokenStream,
@@ -3186,6 +3217,20 @@ fn effective_style(variant: &Variant) -> Style {
     }
 }
 
+/// Appends lifetime `'de` to list of type generics definitions (after impl keyword),
+/// if required.
+///
+/// For example
+///
+/// ```ignore
+/// impl<'a, T, ...> for ...
+/// ```
+///
+/// converted to
+///
+/// ```ignore
+/// impl<'de, 'a, T, ...> for ...
+/// ```
 struct DeImplGenerics<'a>(&'a Parameters);
 #[cfg(feature = "deserialize_in_place")]
 struct InPlaceImplGenerics<'a>(&'a Parameters);
@@ -3246,6 +3291,20 @@ impl<'a> DeImplGenerics<'a> {
     }
 }
 
+/// Appends lifetime `'de` to list of type generics (after type name keyword),
+/// if required.
+///
+/// For example
+///
+/// ```ignore
+/// struct S<'a, T, ...>;
+/// ```
+///
+/// converted to
+///
+/// ```ignore
+/// struct S<'de, 'a, T, ...>;
+/// ```
 struct DeTypeGenerics<'a>(&'a Parameters);
 #[cfg(feature = "deserialize_in_place")]
 struct InPlaceTypeGenerics<'a>(&'a Parameters);
@@ -3260,6 +3319,7 @@ impl<'a> ToTokens for DeTypeGenerics<'a> {
                 colon_token: None,
                 bounds: Punctuated::new(),
             };
+            // Prepend 'de lifetime to list of generics
             generics.params = Some(syn::GenericParam::Lifetime(def))
                 .into_iter()
                 .chain(generics.params)
@@ -3274,6 +3334,7 @@ impl<'a> ToTokens for DeTypeGenerics<'a> {
 impl<'a> ToTokens for InPlaceTypeGenerics<'a> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let mut generics = self.0.generics.clone();
+        // Prepend 'place lifetime to list of generics
         generics.params = Some(syn::GenericParam::Lifetime(place_lifetime()))
             .into_iter()
             .chain(generics.params)
@@ -3286,6 +3347,7 @@ impl<'a> ToTokens for InPlaceTypeGenerics<'a> {
                 colon_token: None,
                 bounds: Punctuated::new(),
             };
+            // Prepend 'de lifetime to list of generics
             generics.params = Some(syn::GenericParam::Lifetime(def))
                 .into_iter()
                 .chain(generics.params)
@@ -3313,6 +3375,20 @@ fn place_lifetime() -> syn::LifetimeDef {
     }
 }
 
+/// Split a type's generics into the pieces required for impl'ing a trait
+/// for that type and appends `'de` lifetime to list of generics.
+///
+/// ```ignore
+/// let (de_impl_generics, de_ty_generics, ty_generics, where_clause) = split_with_de_lifetime();
+/// quote! {
+///     impl #de_impl_generics MyTrait for #name #de_ty_generics // or #ty_generics
+///         #where_clause
+///     {
+///         // ...
+///     }
+/// }
+/// # ;
+/// ```
 fn split_with_de_lifetime(
     params: &Parameters,
 ) -> (

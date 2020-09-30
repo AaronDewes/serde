@@ -46,15 +46,36 @@ pub struct Field<'a> {
     pub original: &'a syn::Field,
 }
 
+/// A style in which `struct` is defined.
 #[derive(Copy, Clone)]
 pub enum Style {
-    /// Named fields.
+    /// Named fields:
+    ///
+    /// ```ignore
+    /// struct Thing {
+    ///     field1: u32,
+    ///     field2: bool,
+    ///     ...
+    /// }
+    /// ```
     Struct,
-    /// Many unnamed fields.
+    /// Many unnamed fields:
+    ///
+    /// ```ignore
+    /// struct Thing(u32, bool, ...);
+    /// ```
     Tuple,
-    /// One unnamed field.
+    /// One unnamed field:
+    ///
+    /// ```ignore
+    /// struct Thing(u32);
+    /// ```
     Newtype,
-    /// No fields.
+    /// No fields:
+    ///
+    /// ```ignore
+    /// struct Thing;
+    /// ```
     Unit,
 }
 
