@@ -1,13 +1,14 @@
 use lib::*;
 
 use de::{
-    Deserialize, DeserializeEmbed, Deserializer, EnumAccess, Error, SeqAccess, Storage, Unexpected,
-    VariantAccess, Visitor,
+    Deserialize, DeserializeEmbed, Deserializer, EnumAccess, Error, IntoDeserializer, SeqAccess,
+    Storage, Unexpected, VariantAccess, Visitor,
 };
 
 #[cfg(any(feature = "std", feature = "alloc", not(no_core_duration)))]
 use de::MapAccess;
 
+use private::de::{Content, ContentDeserializer};
 use seed::InPlaceSeed;
 
 #[cfg(any(feature = "std", feature = "alloc"))]
@@ -1487,6 +1488,20 @@ map_impl!(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! into_deserializer {
+    ($method:ident, $ty:ty) => {
+        #[inline]
+        fn $method<E>(self, value: $ty) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Self::Value::deserialize(value.into_deserializer())
+        }
+    };
+}
+
 /// Implements [`DeserializeEmbed`] for maps.
 ///
 /// Example:
@@ -1521,6 +1536,7 @@ macro_rules! impl_deserialize_embed_for_map {
             fn default() -> Self { Self(Default::default()) }
         }
 
+        /// Deserializes keys of the map
         impl<'de, $k, $v $(, $typaram)*> Visitor<'de> for $storage<$k, $v $(, $typaram)*>
         where
             $k: Deserialize<'de> $(+ $kbound1 $(+ $kbound2)*)*,
@@ -1531,7 +1547,94 @@ macro_rules! impl_deserialize_embed_for_map {
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str("a map key")
             }
-            //TODO: Implement visitor
+
+            into_deserializer!(visit_bool, bool);
+
+            into_deserializer!(visit_i8, i8);
+            into_deserializer!(visit_i16, i16);
+            into_deserializer!(visit_i32, i32);
+            into_deserializer!(visit_i64, i64);
+
+            into_deserializer!(visit_u8, u8);
+            into_deserializer!(visit_u16, u16);
+            into_deserializer!(visit_u32, u32);
+            into_deserializer!(visit_u64, u64);
+
+            serde_if_integer128! {
+                into_deserializer!(visit_i128, i128);
+                into_deserializer!(visit_u128, u128);
+            }
+
+            into_deserializer!(visit_f32, f32);
+            into_deserializer!(visit_f64, f64);
+
+            into_deserializer!(visit_char, char);
+            into_deserializer!(visit_str, &str);
+            into_deserializer!(visit_borrowed_str, &'de str);
+            into_deserializer!(visit_string, String);
+            into_deserializer!(visit_byte_buf, Vec<u8>);
+
+            #[inline]
+            fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                self.visit_byte_buf(value.to_vec())
+            }
+
+            #[inline]
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Self::Value::deserialize(ContentDeserializer::new(Content::None))
+            }
+
+            #[inline]
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                Self::Value::deserialize(deserializer)
+            }
+
+            #[inline]
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Self::Value::deserialize(ContentDeserializer::new(Content::Unit))
+            }
+
+            #[inline]
+            fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                Self::Value::deserialize(deserializer)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut vec = Vec::with_capacity(size_hint::cautious(seq.size_hint()));
+                while let Some(e) = seq.next_element()? {
+                    vec.push(e);
+                }
+                Self::Value::deserialize(ContentDeserializer::new(Content::Seq(vec)))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut vec = Vec::with_capacity(size_hint::cautious(map.size_hint()));
+                while let Some(kv) = map.next_entry()? {
+                    vec.push(kv);
+                }
+                Self::Value::deserialize(ContentDeserializer::new(Content::Map(vec)))
+            }
         }
 
         impl<'de, $k, $v $(, $typaram)*> Storage<'de> for $storage<$k, $v $(, $typaram)*>

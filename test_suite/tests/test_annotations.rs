@@ -7,7 +7,7 @@
     clippy::trivially_copy_pass_by_ref
 )]
 
-use serde::de::{self, MapAccess, Unexpected, Visitor};
+use serde::de::{self, DeserializeEmbed, MapAccess, Storage, Unexpected, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use std::collections::{BTreeMap, HashMap};
@@ -16,7 +16,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use serde_test::{
-    assert_de_tokens, assert_de_tokens_error, assert_ser_tokens, assert_ser_tokens_error,
+    assert_de_tokens, assert_de_tokens_error, assert_ser_tokens,
     assert_tokens, Token,
 };
 
@@ -1998,40 +1998,6 @@ fn test_flatten_unit() {
 }
 
 #[test]
-fn test_flatten_unsupported_type() {
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct Outer {
-        outer: String,
-        #[serde(flatten)]
-        inner: String,
-    }
-
-    assert_ser_tokens_error(
-        &Outer {
-            outer: "foo".into(),
-            inner: "bar".into(),
-        },
-        &[
-            Token::Map { len: None },
-            Token::Str("outer"),
-            Token::Str("foo"),
-        ],
-        "can only flatten structs and maps (got a string)",
-    );
-    assert_de_tokens_error::<Outer>(
-        &[
-            Token::Map { len: None },
-            Token::Str("outer"),
-            Token::Str("foo"),
-            Token::Str("a"),
-            Token::Str("b"),
-            Token::MapEnd,
-        ],
-        "can only flatten structs and maps",
-    );
-}
-
-#[test]
 fn test_non_string_keys() {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct TestStruct {
@@ -2590,25 +2556,63 @@ fn test_flatten_any_after_flatten_struct() {
         where
             D: Deserializer<'de>,
         {
-            struct AnyVisitor;
-
-            impl<'de> Visitor<'de> for AnyVisitor {
-                type Value = Any;
-
-                fn expecting(&self, _formatter: &mut fmt::Formatter) -> fmt::Result {
-                    unimplemented!()
-                }
-
-                fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-                where
-                    M: MapAccess<'de>,
-                {
-                    while let Some((Any, Any)) = map.next_entry()? {}
-                    Ok(Any)
-                }
-            }
-
             deserializer.deserialize_any(AnyVisitor)
+        }
+    }
+    impl<'de> DeserializeEmbed<'de> for Any {
+        type Storage = AnyVisitor;
+        type KeyVisitor = AnyVisitor;
+
+        #[inline]
+        fn new_storage() -> Self::Storage {
+            AnyVisitor
+        }
+
+        #[inline]
+        fn new_visitor() -> Self::KeyVisitor {
+            AnyVisitor
+        }
+
+        fn deserialize_embed<E>(_storage: Self::Storage) -> Result<Self, E>
+        where
+            E: de::Error,
+        {
+            Ok(Any)
+        }
+    }
+
+    struct AnyVisitor;
+
+    impl<'de> Visitor<'de> for AnyVisitor {
+        type Value = Any;
+
+        fn expecting(&self, _formatter: &mut fmt::Formatter) -> fmt::Result {
+            unimplemented!()
+        }
+
+        fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+        where
+            M: MapAccess<'de>,
+        {
+            while let Some((Any, Any)) = map.next_entry()? {}
+            Ok(Any)
+        }
+    }
+
+    impl<'de> Storage<'de> for AnyVisitor {
+        type Key = Any;
+
+        #[inline]
+        fn is_known(_key: &Self::Key) -> bool {
+            true
+        }
+
+        fn consume_value<A>(&mut self, _key: Self::Key, mut map: A) -> Result<A, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let _: Any = map.next_value()?;
+            Ok(map)
         }
     }
 

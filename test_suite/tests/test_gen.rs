@@ -525,12 +525,13 @@ fn test_gen() {
     }
     assert_ser::<UntaggedVariantWith>();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Serialize)]
     struct FlattenWith {
-        #[serde(flatten, serialize_with = "ser_x", deserialize_with = "de_x")]
+        //TODO: deserialize_with and flatten now not supported together, but maybe this can be implemented
+        #[serde(flatten, serialize_with = "ser_x")]
         x: X,
     }
-    assert::<FlattenWith>();
+    assert_ser::<FlattenWith>();
 
     #[derive(Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]

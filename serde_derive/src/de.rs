@@ -306,6 +306,8 @@ fn borrowed_lifetimes(cont: &Container) -> BorrowedLifetimes {
 /// - `params`: Another inferred information of type being deserialized
 fn deserialize_body(vis: &Visibility, cont: &Container, params: &Parameters) -> (Fragment, Option<TokenStream>) {
     if cont.attrs.transparent() {
+        // Transparent structs can't be flattened
+        // TODO: allow embedding if underlying type can be embed
         (deserialize_transparent(cont, params), None)
     } else if let Some(type_from) = cont.attrs.type_from() {
         (deserialize_from(type_from), Some(derive_embed(vis, params)))
@@ -316,7 +318,7 @@ fn deserialize_body(vis: &Visibility, cont: &Container, params: &Parameters) -> 
             Data::Enum(variants) => deserialize_enum(vis, "", params, variants, &cont.attrs),
             Data::Struct(Style::Struct, fields) => (
                 deserialize_struct("", None, params, fields, &cont.attrs, None, &Untagged::No),
-                Some(derive_embed(vis, params)),
+                Some(derive_embed_struct(vis, params, fields, &cont.attrs)),
             ),
             Data::Struct(Style::Tuple, fields) => (
                 deserialize_tuple(None, params, fields, &cont.attrs, None),
@@ -3111,6 +3113,438 @@ fn deserialize_map_in_place(
     }
 }
 
+fn derive_embed_struct(
+    vis: &Visibility,
+    params: &Parameters,
+    fields: &[Field],
+    cattrs: &attr::Container,
+) -> TokenStream {
+    let delife = params.borrowed.de_lifetime();
+    let this = &params.this;
+    let (de_impl_generics, de_ty_generics, ty_generics, where_clause) = split_with_de_lifetime(&params);
+
+    // Create the field names for the fields.
+    let fields_names: Vec<_> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, field)| (field, field_i(i)))
+        .collect();
+
+    let expr_is_missing = |field: &Field| {
+        let name = field.attrs.name().deserialize_name();
+
+        expr_is_missing_impl(field, cattrs, &name, quote_expr! {
+            return _serde::__private::Err(__E::missing_field(#name))
+        })
+    };
+
+    // Tuple with 7 elements:
+    // - `Key` enum field declaration,
+    // - `KeyVisitor` field declaration,
+    // - `KeyVisitor` field initialization,
+    // - `Storage` field declaration,
+    // - `Storage` field initialization,
+    // - `Storage.consume_value()` implementation
+    // - `DeserializeEmbed.deserialize_embed()` implementation
+    let field_props: Vec<_> = fields_names
+        .iter()
+        .filter(|&&(field, _)| !field.attrs.skip_deserializing())
+        .map(|(field, name)| {
+            let ty = field.ty;
+
+            if field.attrs.flatten() {
+                let embed = quote!(<#ty as _serde::de::DeserializeEmbed<#delife>>);
+                // Type of key
+                let key = quote!(<#embed::Storage as _serde::de::Storage<#delife>>::Key);
+
+                (
+                    quote! { #name(#key), },
+                    Some(quote! { #name: #embed::KeyVisitor, }),
+                    Some(quote! { #name: #embed::new_visitor(), }),
+                    quote! { #name: #embed::Storage, },
+                    quote! { #name: #embed::new_storage(), },
+                    quote! {
+                        Self::Key::#name(__key) => {
+                            return self.#name.consume_value(__key, __map);
+                        },
+                    },
+                    quote! {
+                        let #name: #ty = try!(_serde::de::DeserializeEmbed::deserialize_embed(__storage.#name));
+                    },
+                )
+            } else {
+                let deser_name = field.attrs.name().deserialize_name();
+                let missing_expr = Match(expr_is_missing(field));
+                let visit = match field.attrs.deserialize_with() {
+                    None => {
+                        let field_ty = field.ty;
+                        let span = field.original.span();
+                        let func = quote_spanned!(span=> _serde::de::MapAccess::next_value::<#field_ty>);
+                        quote! {
+                            try!(#func(&mut __map))
+                        }
+                    }
+                    Some(path) => {
+                        let (wrapper, wrapper_ty) = wrap_deserialize_field_with(params, field.ty, path);
+                        quote!({
+                            #wrapper
+                            match _serde::de::MapAccess::next_value::<#wrapper_ty>(&mut __map) {
+                                _serde::__private::Ok(__wrapper) => __wrapper.value,
+                                _serde::__private::Err(__err) => {
+                                    return _serde::__private::Err(__err);
+                                }
+                            }
+                        })
+                    }
+                };
+
+                (
+                    quote! { #name, },
+                    None,
+                    None,
+                    quote! { #name: _serde::__private::Option<#ty>, },
+                    quote! { #name: _serde::__private::None, },
+                    quote! {
+                        Self::Key::#name => {
+                            if _serde::__private::Option::is_some(&self.#name) {
+                                return _serde::__private::Err(<__A::Error as _serde::de::Error>::duplicate_field(#deser_name));
+                            }
+                            self.#name = _serde::__private::Some(#visit);
+                        }
+                    },
+                    quote! {
+                        let #name = match __storage.#name {
+                            _serde::__private::Some(#name) => #name,
+                            _serde::__private::None => #missing_expr
+                        };
+                    },
+                )
+            }
+        })
+        .collect();
+
+    // Extract each field to its own collection
+    let declare_enum    = field_props.iter().map(|(name, _, _, _, _, _, _)| name);
+    let declare_visitor = field_props.iter().map(|(_, name, _, _, _, _, _)| name);
+    let init_visitor    = field_props.iter().map(|(_, _, expr, _, _, _, _)| expr);
+    let declare_storage = field_props.iter().map(|(_, _, _, name, _, _, _)| name);
+    let init_storage    = field_props.iter().map(|(_, _, _, _, expr, _, _)| expr);
+    let consume_values  = field_props.iter().map(|(_, _, _, _, _, expr, _)| expr);
+    let extract_values  = field_props.iter().map(|(_, _, _, _, _, _, expr)| expr);
+
+    let is_own = |field: &Field| !(field.attrs.skip_deserializing() || field.attrs.flatten());
+
+    // Handle #[serde(default)] on containers.
+    // Create object with default fields, which will supply default values for fields
+    let let_default = match cattrs.default() {
+        attr::Default::Default => Some(quote!(
+            let __default: Self = _serde::__private::Default::default();
+        )),
+        attr::Default::Path(path) => Some(quote!(
+            let __default: Self = #path();
+        )),
+        attr::Default::None => {
+            // We don't need the default value, to prevent an unused variable warning
+            // we'll leave the line empty.
+            None
+        }
+    };
+
+    let self_arms = fields_names
+        .iter()
+        .filter(|&&(field, _)| is_own(field))
+        .map(|(field, name)| (name, field.attrs.aliases()));
+    // Collecting iterators because its used twice
+    let self_arms_strs: Vec<_> = self_arms
+        .clone()
+        .map(|(name, aliases)| {
+            quote! {
+                #(#aliases)|* => _serde::__private::Ok(Self::Value::#name),
+            }
+        })
+        .collect();
+    let self_arms_bytes: Vec<_> = self_arms
+        .map(|(name, aliases)| {
+            let aliases = aliases.iter().map(|alias| Literal::byte_string(alias.as_bytes()));
+            quote! {
+                #(#aliases)|* => _serde::__private::Ok(Self::Value::#name),
+            }
+        })
+        .collect();
+
+    let visit_str   = storage_visitor_other_arm(&delife, &fields_names, &quote!(visit_str), quote!(__value));
+    let visit_bytes = storage_visitor_other_arm(&delife, &fields_names, &quote!(visit_bytes), quote!(__value));
+    let visit_borrowed_str   = storage_visitor_other_arm(&delife, &fields_names, &quote!(visit_borrowed_str), quote!(__value));
+    let visit_borrowed_bytes = storage_visitor_other_arm(&delife, &fields_names, &quote!(visit_borrowed_bytes), quote!(__value));
+    // Visit ignored values to consume them
+    let ignored_arm_str = if cattrs.deny_unknown_fields() {
+        quote! {
+            _serde::__private::Err(__E::custom(format_args!("unknown field `{}`", __value)))
+        }
+    } else {
+        quote! {
+            _serde::__private::Ok(Self::Value::__unknown(_serde::__private::PhantomData))
+        }
+    };
+    let ignored_arm_bytes = if cattrs.deny_unknown_fields() {
+        quote! {
+            let __value = &_serde::__private::from_utf8_lossy(__value);
+            _serde::__private::Err(__E::custom(format_args!("unknown field `{}`", __value)))
+        }
+    } else {
+        quote! {
+            _serde::__private::Ok(Self::Value::__unknown(_serde::__private::PhantomData))
+        }
+    };
+
+    let visit_other = [
+        (quote!(visit_u8),  quote!(u8)),
+        (quote!(visit_u16), quote!(u16)),
+        (quote!(visit_u32), quote!(u32)),
+        (quote!(visit_u64), quote!(u64)),
+
+        (quote!(visit_i8),  quote!(i8)),
+        (quote!(visit_i16), quote!(i16)),
+        (quote!(visit_i32), quote!(i32)),
+        (quote!(visit_i64), quote!(i64)),
+
+        (quote!(visit_f32), quote!(f32)),
+        (quote!(visit_f64), quote!(f64)),
+
+        (quote!(visit_bool), quote!(bool)),
+        (quote!(visit_char), quote!(char)),
+    ];
+    let visit_other = visit_other.iter().map(|(name, ty)| {
+        let visit = storage_visitor_other_arm(&delife, &fields_names, &name, quote!(__value));
+        quote! {
+            fn #name<__E>(self, __value: #ty) -> _serde::__private::Result<Self::Value, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                #(#visit)*
+                _serde::__private::Ok(Self::Value::__unknown(_serde::__private::PhantomData))
+            }
+        }
+    });
+    let visit_unit =
+        storage_visitor_other_arm(&delife, &fields_names, &quote!(visit_unit), quote!());
+
+    let result = fields_names.iter().map(|(field, name)| {
+        let member = &field.member;
+        if field.attrs.skip_deserializing() {
+            let value = Expr(expr_is_missing(field));
+            quote!(#member: #value)
+        } else {
+            quote!(#member: #name)
+        }
+    });
+
+    let mut result = quote!(Self { #(#result),* });
+    if params.has_getter {
+        result = quote! { _serde::__private::Into::<#this>::into(#result) };
+    }
+
+    let expecting_key = format!("field identifier of struct {}", params.type_name());
+    let expecting_val = format!("struct {}", params.type_name());
+    quote! {
+        #[allow(non_camel_case_types)]
+        #vis enum __Key #de_impl_generics #where_clause {
+            #(#declare_enum)*
+
+            __unknown(_serde::__private::PhantomData<(&#delife (), #this #ty_generics)>),
+        }
+        impl #de_impl_generics _serde::de::Deserialize<#delife> for __Key #de_ty_generics #where_clause {
+            #[inline]
+            fn deserialize<__D>(__deserializer: __D) -> _serde::__private::Result<Self, __D::Error>
+            where
+                __D: _serde::de::Deserializer<#delife>,
+            {
+                _serde::de::Deserializer::deserialize_identifier(
+                    __deserializer,
+                    <#this #ty_generics as _serde::de::DeserializeEmbed<#delife>>::new_visitor()
+                )
+            }
+        }
+
+        //-----------------------------------------------------------------------------------------
+
+        #vis struct __KeyVisitor #de_impl_generics #where_clause {
+            #(#declare_visitor)*
+
+            __ignore: _serde::__private::PhantomData<(&#delife (), #this #ty_generics)>,
+        }
+        impl #de_impl_generics _serde::__private::Default for __KeyVisitor #de_ty_generics #where_clause {
+            #[inline]
+            fn default() -> Self {
+                __KeyVisitor {
+                    #(#init_visitor)*
+
+                    __ignore: _serde::__private::PhantomData::<(&(), #this #ty_generics)>,
+                }
+            }
+        }
+        impl #de_impl_generics _serde::de::Visitor<#delife> for __KeyVisitor #de_ty_generics #where_clause {
+            type Value = __Key #de_ty_generics;
+
+            fn expecting(&self, __formatter: &mut _serde::__private::Formatter) -> _serde::__private::fmt::Result {
+                _serde::__private::Formatter::write_str(__formatter, #expecting_key)
+            }
+
+            #(#visit_other)*
+
+            fn visit_unit<__E>(self) -> _serde::__private::Result<Self::Value, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                #(#visit_unit)*
+                _serde::__private::Ok(Self::Value::__unknown(_serde::__private::PhantomData))
+            }
+
+            fn visit_borrowed_str<__E>(self, __value: &#delife str) -> _serde::__private::Result<Self::Value, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                match __value {
+                    #(#self_arms_strs)*
+                    _ => {
+                        #(#visit_borrowed_str)*
+                        #ignored_arm_str
+                    }
+                }
+            }
+
+            fn visit_borrowed_bytes<__E>(self, __value: &#delife [u8]) -> _serde::__private::Result<Self::Value, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                match __value {
+                    #(#self_arms_bytes)*
+                    _ => {
+                        #(#visit_borrowed_bytes)*
+                        #ignored_arm_bytes
+                    }
+                }
+            }
+
+            fn visit_str<__E>(self, __value: &str) -> _serde::__private::Result<Self::Value, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                match __value {
+                    #(#self_arms_strs)*
+                    _ => {
+                        #(#visit_str)*
+                        #ignored_arm_str
+                    }
+                }
+            }
+
+            fn visit_bytes<__E>(self, __value: &[u8]) -> _serde::__private::Result<Self::Value, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                match __value {
+                    #(#self_arms_bytes)*
+                    _ => {
+                        #(#visit_bytes)*
+                        #ignored_arm_bytes
+                    }
+                }
+            }
+        }
+
+        //-----------------------------------------------------------------------------------------
+
+        #vis struct __Storage #de_impl_generics #where_clause {
+            #(#declare_storage)*
+
+            __ignore: _serde::__private::PhantomData<(&#delife (), #this #ty_generics)>,
+        }
+        impl #de_impl_generics _serde::__private::Default for __Storage #de_ty_generics #where_clause {
+            #[inline]
+            fn default() -> Self {
+                __Storage {
+                    #(#init_storage)*
+
+                    __ignore: _serde::__private::PhantomData::<(&(), #this #ty_generics)>,
+                }
+            }
+        }
+        impl #de_impl_generics _serde::de::Visitor<#delife> for __Storage #de_ty_generics #where_clause {
+            type Value = #this #ty_generics;
+
+            fn expecting(&self, __formatter: &mut _serde::__private::Formatter) -> _serde::__private::fmt::Result {
+                _serde::__private::Formatter::write_str(__formatter, #expecting_val)
+            }
+
+            #[inline]
+            fn visit_map<__A>(mut self, mut __map: __A) -> _serde::__private::Result<Self::Value, __A::Error>
+            where
+                __A: _serde::de::MapAccess<#delife>,
+            {
+                while let _serde::__private::Some(__key) = try!(_serde::de::MapAccess::next_key(&mut __map)) {
+                    __map = try!(<Self as _serde::de::Storage<#delife>>::consume_value(&mut self, __key, __map));
+                }
+                <Self::Value as _serde::de::DeserializeEmbed<#delife>>::deserialize_embed(self)
+            }
+        }
+        impl #de_impl_generics _serde::de::Storage<#delife> for __Storage #de_ty_generics #where_clause {
+            type Key = __Key #de_ty_generics;
+
+            #[inline]
+            fn is_known(__key: &Self::Key) -> bool {
+                match __key {
+                    Self::Key::__unknown(_) => false,
+                    _ => true,
+                }
+            }
+
+            fn consume_value<__A>(&mut self, __key: Self::Key, mut __map: __A) -> _serde::__private::Result<__A, __A::Error>
+            where
+                __A: _serde::de::MapAccess<#delife>
+            {
+                match __key {
+                    #(#consume_values)*
+
+                    Self::Key::__unknown(_) => {
+                        let _ = try!(_serde::de::MapAccess::next_value::<_serde::de::IgnoredAny>(&mut __map));
+                    },
+                }
+                _serde::__private::Ok(__map)
+            }
+        }
+
+        //-----------------------------------------------------------------------------------------
+
+        #[automatically_derived]
+        impl #de_impl_generics _serde::de::DeserializeEmbed<#delife> for #this #ty_generics #where_clause {
+            type Storage = __Storage #de_ty_generics;
+            type KeyVisitor = __KeyVisitor #de_ty_generics;
+
+            #[inline]
+            fn new_storage() -> Self::Storage {
+                __Storage::default()
+            }
+
+            #[inline]
+            fn new_visitor() -> Self::KeyVisitor {
+                __KeyVisitor::default()
+            }
+
+            fn deserialize_embed<__E>(__storage: Self::Storage) -> _serde::__private::Result<Self, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                #let_default
+
+                #(#extract_values)*
+
+                _serde::__private::Ok(#result)
+            }
+        }
+    }
+}
+
 fn derive_embed(
     vis: &Visibility,
     params: &Parameters,
@@ -3211,6 +3645,45 @@ fn derive_embed(
             }
         }
     }
+}
+
+/// Generates chain of delegating calls, in case of unknown field next function in the
+/// chain is called. Errors propagated to the caller.
+///
+/// Example of generated pieces:
+/// ```ignore
+/// let field1 = self.field1.visit_str::<E>(value)?;
+/// if Storage1::is_known(&field1) {
+///     return Ok(Self::Value::field1(field1));
+/// }
+/// // ...
+/// let fieldN = self.fieldN.visit_str::<E>(value)?;
+/// if StorageN::is_known(&fieldN) {
+///     return Ok(Self::Value::fieldN(fieldN));
+/// }
+/// // This is generated outside of this function
+/// Ok(Self::Value::unknown(PhantomData))
+/// ```
+fn storage_visitor_other_arm(
+    delife: &syn::Lifetime,
+    fields_names: &[(&Field, Ident)],
+    method: &TokenStream,
+    value: TokenStream,
+) -> Vec<TokenStream> {
+    fields_names
+        .iter()
+        .filter(|&(field, _)| !field.attrs.skip_deserializing() && field.attrs.flatten())
+        .map(|(field, name)| {
+            let ty = field.ty;
+            let storage = quote!(<#ty as _serde::de::DeserializeEmbed<#delife>>::Storage);
+            quote! {
+                let #name = try!(self.#name.#method::<__E>(#value));
+                if <#storage as _serde::de::Storage<#delife>>::is_known(&#name) {
+                    return _serde::__private::Ok(Self::Value::#name(#name));
+                }
+            }
+        })
+        .collect()
 }
 
 fn field_i(i: usize) -> Ident {
@@ -3336,6 +3809,24 @@ fn unwrap_to_variant_closure(
 }
 
 fn expr_is_missing(field: &Field, cattrs: &attr::Container) -> Fragment {
+    let name = field.attrs.name().deserialize_name();
+
+    expr_is_missing_impl(
+        field,
+        cattrs,
+        &name,
+        quote_expr! {
+            return _serde::__private::Err(<__A::Error as _serde::de::Error>::missing_field(#name))
+        },
+    )
+}
+
+fn expr_is_missing_impl(
+    field: &Field,
+    cattrs: &attr::Container,
+    name: &str,
+    missing_expr: Fragment,
+) -> Fragment {
     match field.attrs.default() {
         attr::Default::Default => {
             let span = field.original.span();
@@ -3356,7 +3847,6 @@ fn expr_is_missing(field: &Field, cattrs: &attr::Container) -> Fragment {
         attr::Default::None => { /* below */ }
     }
 
-    let name = field.attrs.name().deserialize_name();
     match field.attrs.deserialize_with() {
         None => {
             let span = field.original.span();
@@ -3365,11 +3855,7 @@ fn expr_is_missing(field: &Field, cattrs: &attr::Container) -> Fragment {
                 try!(#func(#name))
             }
         }
-        Some(_) => {
-            quote_expr! {
-                return _serde::__private::Err(<__A::Error as _serde::de::Error>::missing_field(#name))
-            }
-        }
+        Some(_) => missing_expr,
     }
 }
 
