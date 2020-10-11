@@ -2184,6 +2184,20 @@ fn deserialize_generated_identifier(
     }
 }
 
+fn deserialize_generated_identifier_for_map(
+    prefix: &str,
+    fields: &[(String, Ident, Vec<String>)],
+    cattrs: &attr::Container,
+) -> Fragment {
+    deserialize_generated_identifier(
+        prefix,
+        &fields,
+        cattrs,
+        false,
+        None,
+    )
+}
+
 /// Generates `Deserialize::deserialize` body for an enum with
 /// `serde(field_identifier)` or `serde(variant_identifier)` attribute.
 fn deserialize_custom_identifier(
@@ -2613,7 +2627,7 @@ fn deserialize_struct_as_struct_visitor(
     };
 
     let field_visitor =
-        deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
+        deserialize_generated_identifier_for_map(prefix, &field_names_idents, cattrs);
 
     (field_visitor, Some(fields_stmt))
 }
@@ -2637,7 +2651,7 @@ fn deserialize_struct_as_map_visitor(
         .collect();
 
     let field_visitor =
-        deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
+        deserialize_generated_identifier_for_map(prefix, &field_names_idents, cattrs);
 
     (field_visitor, None)
 }
@@ -2890,7 +2904,7 @@ fn deserialize_struct_as_struct_in_place_visitor(
     };
 
     let field_visitor =
-        deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
+        deserialize_generated_identifier_for_map(prefix, &field_names_idents, cattrs);
 
     let visit_map = deserialize_map_in_place(field_struct_name(prefix), params, fields, cattrs);
 
@@ -3309,24 +3323,29 @@ struct DeTypeGenerics<'a>(&'a Parameters);
 #[cfg(feature = "deserialize_in_place")]
 struct InPlaceTypeGenerics<'a>(&'a Parameters);
 
+/// If `'de` lifetime is defined, prepends it to list of generics
+/// and then produces tokens for declaration generics on type
+fn to_tokens(mut generics: syn::Generics, borrowed: &BorrowedLifetimes, tokens: &mut TokenStream) {
+    if borrowed.de_lifetime_def().is_some() {
+        let def = syn::LifetimeDef {
+            attrs: Vec::new(),
+            lifetime: syn::Lifetime::new("'de", Span::call_site()),
+            colon_token: None,
+            bounds: Punctuated::new(),
+        };
+        // Prepend 'de lifetime to list of generics
+        generics.params = Some(syn::GenericParam::Lifetime(def))
+            .into_iter()
+            .chain(generics.params)
+            .collect();
+    }
+    let (_, ty_generics, _) = generics.split_for_impl();
+    ty_generics.to_tokens(tokens);
+}
+
 impl<'a> ToTokens for DeTypeGenerics<'a> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let mut generics = self.0.generics.clone();
-        if self.0.borrowed.de_lifetime_def().is_some() {
-            let def = syn::LifetimeDef {
-                attrs: Vec::new(),
-                lifetime: syn::Lifetime::new("'de", Span::call_site()),
-                colon_token: None,
-                bounds: Punctuated::new(),
-            };
-            // Prepend 'de lifetime to list of generics
-            generics.params = Some(syn::GenericParam::Lifetime(def))
-                .into_iter()
-                .chain(generics.params)
-                .collect();
-        }
-        let (_, ty_generics, _) = generics.split_for_impl();
-        ty_generics.to_tokens(tokens);
+        to_tokens(self.0.generics.clone(), &self.0.borrowed, tokens);
     }
 }
 
@@ -3340,21 +3359,7 @@ impl<'a> ToTokens for InPlaceTypeGenerics<'a> {
             .chain(generics.params)
             .collect();
 
-        if self.0.borrowed.de_lifetime_def().is_some() {
-            let def = syn::LifetimeDef {
-                attrs: Vec::new(),
-                lifetime: syn::Lifetime::new("'de", Span::call_site()),
-                colon_token: None,
-                bounds: Punctuated::new(),
-            };
-            // Prepend 'de lifetime to list of generics
-            generics.params = Some(syn::GenericParam::Lifetime(def))
-                .into_iter()
-                .chain(generics.params)
-                .collect();
-        }
-        let (_, ty_generics, _) = generics.split_for_impl();
-        ty_generics.to_tokens(tokens);
+        to_tokens(generics, &self.0.borrowed, tokens);
     }
 }
 
