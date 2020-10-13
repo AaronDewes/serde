@@ -2,7 +2,7 @@ use proc_macro2::{Literal, Span, TokenStream};
 use quote::ToTokens;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{self, Ident, Index, Member};
+use syn::{self, Ident, Index, Member, Visibility};
 
 use bound;
 use dummy;
@@ -28,15 +28,15 @@ pub fn expand_derive_deserialize(
     ctxt.check()?;
 
     let ident = &cont.ident;
+    let vis = &input.vis;
     let params = Parameters::new(&cont);
     let (de_impl_generics, _, ty_generics, where_clause) = split_with_de_lifetime(&params);
-    let (body, embed_support) = deserialize_body(&cont, &params);
+    let (body, embed_support) = deserialize_body(vis, &cont, &params);
     let body = Stmts(body);
     let delife = params.borrowed.de_lifetime();
     let serde = cont.attrs.serde_path();
 
     let impl_block = if let Some(remote) = cont.attrs.remote() {
-        let vis = &input.vis;
         let used = pretend::pretend_used(&cont, params.is_packed);
         quote! {
             impl #de_impl_generics #ident #ty_generics #where_clause {
@@ -194,6 +194,14 @@ fn build_generics(cont: &Container, borrowed: &BorrowedLifetimes) -> syn::Generi
                 &parse_quote!(_serde::Deserialize<#delife>),
             );
 
+            // Add bound DeserializeEmbed<'de> to generic types of all #[serde(flatten)] fields
+            let generics = bound::with_bound(
+                cont,
+                &generics,
+                requires_embed,
+                &parse_quote!(_serde::de::DeserializeEmbed<#delife>),
+            );
+
             bound::with_bound(
                 cont,
                 &generics,
@@ -219,6 +227,11 @@ fn needs_deserialize_bound(field: &attr::Field, variant: Option<&attr::Variant>)
                 && variant.deserialize_with().is_none()
                 && variant.de_bound().is_none()
         })
+}
+
+/// Fields with a `flatten` attribute and all rules from `needs_deserialize_bound`
+fn requires_embed(field: &attr::Field, variant: Option<&attr::Variant>) -> bool {
+    field.flatten() && needs_deserialize_bound(field, variant)
 }
 
 /// Fields with a `default` attribute (not `default=...`).
@@ -288,21 +301,22 @@ fn borrowed_lifetimes(cont: &Container) -> BorrowedLifetimes {
 /// - optional implementation of the `DeserializeEmbed` trait
 ///
 /// # Parameters
+/// - `vis`: visibility modifier of type for which `Deserialize` is derived
 /// - `cont`: Description of type being deserialized
 /// - `params`: Another inferred information of type being deserialized
-fn deserialize_body(cont: &Container, params: &Parameters) -> (Fragment, Option<TokenStream>) {
+fn deserialize_body(vis: &Visibility, cont: &Container, params: &Parameters) -> (Fragment, Option<TokenStream>) {
     if cont.attrs.transparent() {
         (deserialize_transparent(cont, params), None)
     } else if let Some(type_from) = cont.attrs.type_from() {
-        (deserialize_from(type_from), None)
+        (deserialize_from(type_from), Some(derive_embed(vis, params)))
     } else if let Some(type_try_from) = cont.attrs.type_try_from() {
-        (deserialize_try_from(type_try_from), None)
+        (deserialize_try_from(type_try_from), Some(derive_embed(vis, params)))
     } else if let attr::Identifier::No = cont.attrs.identifier() {
         match &cont.data {
-            Data::Enum(variants) => deserialize_enum("", params, variants, &cont.attrs),
+            Data::Enum(variants) => deserialize_enum(vis, "", params, variants, &cont.attrs),
             Data::Struct(Style::Struct, fields) => (
                 deserialize_struct("", None, params, fields, &cont.attrs, None, &Untagged::No),
-                None,
+                Some(derive_embed(vis, params)),
             ),
             Data::Struct(Style::Tuple, fields) => (
                 deserialize_tuple(None, params, fields, &cont.attrs, None),
@@ -310,11 +324,11 @@ fn deserialize_body(cont: &Container, params: &Parameters) -> (Fragment, Option<
             ),
             Data::Struct(Style::Newtype, fields) => (
                 deserialize_tuple(None, params, fields, &cont.attrs, None),
-                None,
+                Some(derive_embed(vis, params)),
             ),
             Data::Struct(Style::Unit, _) => (
                 deserialize_unit_struct(params, &cont.attrs),
-                None,
+                Some(derive_embed(vis, params)),
             ),
         }
     } else {
@@ -1277,6 +1291,7 @@ fn deserialize_struct_in_place(
 /// Generates `Deserialize::deserialize` body for an enum which hasn't
 /// `#[serde(field_identifier)]` or `#[serde(variant_identifier)]` attributes.
 fn deserialize_enum(
+    vis: &syn::Visibility,
     prefix: &str,
     params: &Parameters,
     variants: &[Variant],
@@ -1285,19 +1300,19 @@ fn deserialize_enum(
     match cattrs.tag() {
         attr::TagType::External => (
             deserialize_externally_tagged_enum(prefix, params, variants, cattrs),
-            None,
+            Some(derive_embed(vis, params)),
         ),
         attr::TagType::Internal { tag } => (
             deserialize_internally_tagged_enum(prefix, params, variants, cattrs, tag),
-            None,
+            Some(derive_embed(vis, params)),
         ),
         attr::TagType::Adjacent { tag, content } => (
             deserialize_adjacently_tagged_enum(prefix, params, variants, cattrs, tag, content),
-            None,
+            Some(derive_embed(vis, params)),
         ),
         attr::TagType::None => (
             deserialize_untagged_enum(params, variants, cattrs),
-            None,
+            Some(derive_embed(vis, params)),
         ),
     }
 }
@@ -3093,6 +3108,108 @@ fn deserialize_map_in_place(
         #(#check_flags)*
 
         _serde::__private::Ok(())
+    }
+}
+
+fn derive_embed(
+    vis: &Visibility,
+    params: &Parameters,
+) -> TokenStream {
+    let delife = params.borrowed.de_lifetime();
+    let this = &params.this;
+    let (de_impl_generics, de_ty_generics, ty_generics, where_clause) =
+        split_with_de_lifetime(&params);
+
+    let expecting_key = format!("field identifier of flatten struct {}", params.type_name());
+
+    quote! {
+        #[allow(non_camel_case_types)]
+        #vis enum __Key #de_impl_generics #where_clause {
+            __unknown(_serde::__private::PhantomData<(&#delife (), #this #ty_generics)>),
+        }
+        impl #de_impl_generics _serde::de::Deserialize<#delife> for __Key #de_ty_generics #where_clause {
+            #[inline]
+            fn deserialize<__D>(__deserializer: __D) -> _serde::__private::Result<Self, __D::Error>
+            where
+                __D: _serde::de::Deserializer<#delife>,
+            {
+                _serde::de::Deserializer::deserialize_identifier(
+                    __deserializer,
+                    <#this #ty_generics as _serde::de::DeserializeEmbed<#delife>>::new_visitor()
+                )
+            }
+        }
+        #vis struct __KeyVisitor #de_impl_generics #where_clause {
+            __ignore: _serde::__private::PhantomData<(&#delife (), #this #ty_generics)>,
+        }
+        impl #de_impl_generics _serde::__private::Default for __KeyVisitor #de_ty_generics #where_clause {
+            #[inline]
+            fn default() -> Self {
+                __KeyVisitor {
+                    __ignore: _serde::__private::PhantomData::<(&(), #this #ty_generics)>,
+                }
+            }
+        }
+        impl #de_impl_generics _serde::de::Visitor<#delife> for __KeyVisitor #de_ty_generics #where_clause {
+            type Value = __Key #de_ty_generics;
+
+            fn expecting(&self, __formatter: &mut _serde::__private::Formatter) -> _serde::__private::fmt::Result {
+                _serde::__private::Formatter::write_str(__formatter, #expecting_key)
+            }
+        }
+
+        //-----------------------------------------------------------------------------------------
+
+        #vis struct __Storage #de_impl_generics #where_clause {
+            /// Mark as used all generic parameters, even if some fields skip deserializing
+            __ignore: _serde::__private::PhantomData<(&#delife (), #this #ty_generics)>,
+        }
+        impl #de_impl_generics _serde::__private::Default for __Storage #de_ty_generics #where_clause {
+            #[inline]
+            fn default() -> Self {
+                __Storage {
+                    __ignore: _serde::__private::PhantomData::<(&(), #this #ty_generics)>,
+                }
+            }
+        }
+        impl #de_impl_generics _serde::de::Storage<#delife> for __Storage #de_ty_generics #where_clause {
+            type Key = __Key #de_ty_generics;
+
+            #[inline]
+            fn is_known(__key: &Self::Key) -> bool { false }
+
+            fn consume_value<__A>(&mut self, __key: Self::Key, __map: __A) -> _serde::__private::Result<__A, __A::Error>
+            where
+                __A: _serde::de::MapAccess<#delife>,
+            {
+                unimplemented!()
+            }
+        }
+
+        //-----------------------------------------------------------------------------------------
+
+        #[automatically_derived]
+        impl #de_impl_generics _serde::de::DeserializeEmbed<#delife> for #this #ty_generics #where_clause {
+            type Storage = __Storage #de_ty_generics;
+            type KeyVisitor = __KeyVisitor #de_ty_generics;
+
+            #[inline]
+            fn new_storage() -> Self::Storage {
+                __Storage::default()
+            }
+
+            #[inline]
+            fn new_visitor() -> Self::KeyVisitor {
+                __KeyVisitor::default()
+            }
+
+            fn deserialize_embed<__E>(__storage: Self::Storage) -> _serde::__private::Result<Self, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                unimplemented!()
+            }
+        }
     }
 }
 
