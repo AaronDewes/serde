@@ -30,7 +30,8 @@ pub fn expand_derive_deserialize(
     let ident = &cont.ident;
     let params = Parameters::new(&cont);
     let (de_impl_generics, _, ty_generics, where_clause) = split_with_de_lifetime(&params);
-    let body = Stmts(deserialize_body(&cont, &params));
+    let (body, embed_support) = deserialize_body(&cont, &params);
+    let body = Stmts(body);
     let delife = params.borrowed.de_lifetime();
     let serde = cont.attrs.serde_path();
 
@@ -63,6 +64,8 @@ pub fn expand_derive_deserialize(
 
                 #fn_deserialize_in_place
             }
+
+            #embed_support
         }
     };
 
@@ -280,30 +283,47 @@ fn borrowed_lifetimes(cont: &Container) -> BorrowedLifetimes {
 
 /// Generates `Deserialize::deserialize` body.
 ///
+/// Returns tuple with two components:
+/// - body of the `Deserialize::deserialize` method
+/// - optional implementation of the `DeserializeEmbed` trait
+///
 /// # Parameters
 /// - `cont`: Description of type being deserialized
 /// - `params`: Another inferred information of type being deserialized
-fn deserialize_body(cont: &Container, params: &Parameters) -> Fragment {
+fn deserialize_body(cont: &Container, params: &Parameters) -> (Fragment, Option<TokenStream>) {
     if cont.attrs.transparent() {
-        deserialize_transparent(cont, params)
+        (deserialize_transparent(cont, params), None)
     } else if let Some(type_from) = cont.attrs.type_from() {
-        deserialize_from(type_from)
+        (deserialize_from(type_from), None)
     } else if let Some(type_try_from) = cont.attrs.type_try_from() {
-        deserialize_try_from(type_try_from)
+        (deserialize_try_from(type_try_from), None)
     } else if let attr::Identifier::No = cont.attrs.identifier() {
         match &cont.data {
             Data::Enum(variants) => deserialize_enum("", params, variants, &cont.attrs),
-            Data::Struct(Style::Struct, fields) => {
-                deserialize_struct("", None, params, fields, &cont.attrs, None, &Untagged::No)
-            }
-            Data::Struct(Style::Tuple, fields) | Data::Struct(Style::Newtype, fields) => {
-                deserialize_tuple(None, params, fields, &cont.attrs, None)
-            }
-            Data::Struct(Style::Unit, _) => deserialize_unit_struct(params, &cont.attrs),
+            Data::Struct(Style::Struct, fields) => (
+                deserialize_struct("", None, params, fields, &cont.attrs, None, &Untagged::No),
+                None,
+            ),
+            Data::Struct(Style::Tuple, fields) => (
+                deserialize_tuple(None, params, fields, &cont.attrs, None),
+                None,
+            ),
+            Data::Struct(Style::Newtype, fields) => (
+                deserialize_tuple(None, params, fields, &cont.attrs, None),
+                None,
+            ),
+            Data::Struct(Style::Unit, _) => (
+                deserialize_unit_struct(params, &cont.attrs),
+                None,
+            ),
         }
     } else {
         match &cont.data {
-            Data::Enum(variants) => deserialize_custom_identifier(params, variants, &cont.attrs),
+            // Handles `#[serde(field_identifier/variant_identifier)]`
+            Data::Enum(variants) => (
+                deserialize_custom_identifier(params, variants, &cont.attrs),
+                None,
+            ),
             Data::Struct(_, _) => unreachable!("checked in serde_derive_internals"),
         }
     }
@@ -1261,18 +1281,24 @@ fn deserialize_enum(
     params: &Parameters,
     variants: &[Variant],
     cattrs: &attr::Container,
-) -> Fragment {
+) -> (Fragment, Option<TokenStream>) {
     match cattrs.tag() {
-        attr::TagType::External => {
-            deserialize_externally_tagged_enum(prefix, params, variants, cattrs)
-        }
-        attr::TagType::Internal { tag } => {
-            deserialize_internally_tagged_enum(prefix, params, variants, cattrs, tag)
-        }
-        attr::TagType::Adjacent { tag, content } => {
-            deserialize_adjacently_tagged_enum(prefix, params, variants, cattrs, tag, content)
-        }
-        attr::TagType::None => deserialize_untagged_enum(params, variants, cattrs),
+        attr::TagType::External => (
+            deserialize_externally_tagged_enum(prefix, params, variants, cattrs),
+            None,
+        ),
+        attr::TagType::Internal { tag } => (
+            deserialize_internally_tagged_enum(prefix, params, variants, cattrs, tag),
+            None,
+        ),
+        attr::TagType::Adjacent { tag, content } => (
+            deserialize_adjacently_tagged_enum(prefix, params, variants, cattrs, tag, content),
+            None,
+        ),
+        attr::TagType::None => (
+            deserialize_untagged_enum(params, variants, cattrs),
+            None,
+        ),
     }
 }
 
