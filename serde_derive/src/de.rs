@@ -1301,7 +1301,7 @@ fn deserialize_enum(
 ) -> (Fragment, Option<TokenStream>) {
     match cattrs.tag() {
         attr::TagType::External => (
-            deserialize_externally_tagged_enum(prefix, params, variants, cattrs),
+            deserialize_externally_tagged_enum(params, cattrs),
             Some(derive_embed_enum_externally(vis, prefix, params, variants, cattrs)),
         ),
         attr::TagType::Internal { tag } => (
@@ -1386,95 +1386,19 @@ fn prepare_enum_variant_enum(
 }
 
 fn deserialize_externally_tagged_enum(
-    prefix: &str,
     params: &Parameters,
-    variants: &[Variant],
     cattrs: &attr::Container,
 ) -> Fragment {
-    let this = &params.this;
-    let (de_impl_generics, de_ty_generics, ty_generics, where_clause) =
-        split_with_de_lifetime(params);
     let delife = params.borrowed.de_lifetime();
 
     let type_name = cattrs.name().deserialize_name();
-    let expecting = format!("enum {}", params.type_name());
-    let expecting = cattrs.expecting().unwrap_or(&expecting);
-
-    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(&Visibility::Inherited, prefix, variants, cattrs, None, None);
-    let field_struct_name = field_struct_name(prefix);
-
-    // Match arms to extract a variant from a string
-    let variant_arms = variants
-        .iter()
-        .enumerate()
-        .filter(|&(_, variant)| !variant.attrs.skip_deserializing())
-        .map(|(i, variant)| {
-            let variant_name = field_i(i);
-
-            let block = Match(deserialize_externally_tagged_variant(
-                params, variant, cattrs,
-            ));
-
-            quote! {
-                (#field_struct_name::#variant_name, __variant) => #block
-            }
-        });
-
-    let all_skipped = variants
-        .iter()
-        .all(|variant| variant.attrs.skip_deserializing());
-    let match_variant = if all_skipped {
-        // This is an empty enum like `enum Impossible {}` or an enum in which
-        // all variants have `#[serde(skip_deserializing)]`.
-        quote! {
-            // FIXME: Once we drop support for Rust 1.15:
-            // let _serde::__private::Err(__err) = _serde::de::EnumAccess::variant::<#field_struct_name>(__data);
-            // _serde::__private::Err(__err)
-            _serde::__private::Result::map(
-                _serde::de::EnumAccess::variant::<#field_struct_name>(__data),
-                |(__impossible, _)| match __impossible {})
-        }
-    } else {
-        quote! {
-            match try!(_serde::de::EnumAccess::variant(__data)) {
-                #(#variant_arms)*
-            }
-        }
-    };
 
     quote_block! {
-        #variant_visitor
-
-        struct __Visitor #de_impl_generics #where_clause {
-            marker: _serde::__private::PhantomData<#this #ty_generics>,
-            lifetime: _serde::__private::PhantomData<&#delife ()>,
-        }
-
-        impl #de_impl_generics _serde::de::Visitor<#delife> for __Visitor #de_ty_generics #where_clause {
-            type Value = #this #ty_generics;
-
-            fn expecting(&self, __formatter: &mut _serde::__private::Formatter) -> _serde::__private::fmt::Result {
-                _serde::__private::Formatter::write_str(__formatter, #expecting)
-            }
-
-            fn visit_enum<__A>(self, __data: __A) -> _serde::__private::Result<Self::Value, __A::Error>
-            where
-                __A: _serde::de::EnumAccess<#delife>,
-            {
-                #match_variant
-            }
-        }
-
-        #variants_stmt
-
         _serde::Deserializer::deserialize_enum(
             __deserializer,
             #type_name,
             VARIANTS,
-            __Visitor {
-                marker: _serde::__private::PhantomData::<#this #ty_generics>,
-                lifetime: _serde::__private::PhantomData,
-            },
+            <Self as _serde::de::DeserializeEmbed<#delife>>::new_storage(),
         )
     }
 }
