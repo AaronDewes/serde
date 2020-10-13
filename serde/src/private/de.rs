@@ -1,10 +1,10 @@
 use lib::*;
 
 use de::value::{BorrowedBytesDeserializer, BytesDeserializer};
-use de::{Deserialize, Deserializer, Error, IntoDeserializer, Visitor};
+use de::{Deserialize, DeserializeSeed, Deserializer, Error, IntoDeserializer, VariantAccess, Visitor};
 
 #[cfg(any(feature = "std", feature = "alloc"))]
-use de::{DeserializeSeed, MapAccess, Unexpected};
+use de::{MapAccess, Unexpected};
 
 #[cfg(any(feature = "std", feature = "alloc"))]
 pub use self::content::{
@@ -2929,5 +2929,68 @@ where
             Some(value) => seed.deserialize(ContentRefDeserializer::new(value)),
             None => panic!("value is missing"),
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// Creates a `DeserializeSeed` struct `$name` that forwards a visitor to
+/// other deserializer, using specified deserialize `$method`.
+macro_rules! visitor_seed {
+    ($name:ident => $method:ident) => {
+        struct $name<V>(V);
+        impl<'de, V> DeserializeSeed<'de> for $name<V>
+        where V: Visitor<'de>,
+        {
+            type Value = V::Value;
+
+            #[inline]
+            fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where D: Deserializer<'de>
+            {
+                deserializer.$method(self.0)
+            }
+        }
+    };
+}
+
+/// Represents map accessor as a variant accessor
+pub struct AsVariantAccess<A>(pub A);
+impl<'de, A> VariantAccess<'de> for AsVariantAccess<A>
+where
+    A: MapAccess<'de>,
+{
+    type Error = A::Error;
+
+    #[inline]
+    fn unit_variant(mut self) -> Result<(), Self::Error> {
+        self.0.next_value()
+    }
+    #[inline]
+    fn newtype_variant_seed<T>(mut self, seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>
+    {
+        self.0.next_value_seed(seed)
+    }
+    #[inline]
+    fn tuple_variant<V>(mut self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>
+    {
+        visitor_seed!(Seed => deserialize_seq);
+        self.0.next_value_seed(Seed(visitor))
+    }
+    #[inline]
+    fn struct_variant<V>(
+        mut self,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>
+    {
+        visitor_seed!(Seed => deserialize_map);
+        self.0.next_value_seed(Seed(visitor))
     }
 }

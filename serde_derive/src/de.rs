@@ -1302,7 +1302,7 @@ fn deserialize_enum(
     match cattrs.tag() {
         attr::TagType::External => (
             deserialize_externally_tagged_enum(prefix, params, variants, cattrs),
-            Some(derive_embed(vis, params)),
+            Some(derive_embed_enum_externally(vis, prefix, params, variants, cattrs)),
         ),
         attr::TagType::Internal { tag } => (
             deserialize_internally_tagged_enum(prefix, params, variants, cattrs, tag),
@@ -1333,6 +1333,7 @@ fn deserialize_enum(
 ///   to parse that struct. Generated code equivalent to result of
 ///   `#[serde(variant_identifier)]` attribute
 fn prepare_enum_variant_enum(
+    vis: &Visibility,
     prefix: &str,
     variants: &[Variant],
     cattrs: &attr::Container,
@@ -1371,6 +1372,7 @@ fn prepare_enum_variant_enum(
     };
 
     let variant_visitor = Stmts(deserialize_generated_identifier(
+        vis,
         prefix,
         &variant_names_idents,
         cattrs,
@@ -1398,7 +1400,7 @@ fn deserialize_externally_tagged_enum(
     let expecting = format!("enum {}", params.type_name());
     let expecting = cattrs.expecting().unwrap_or(&expecting);
 
-    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs, None, None);
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(&Visibility::Inherited, prefix, variants, cattrs, None, None);
     let field_struct_name = field_struct_name(prefix);
 
     // Match arms to extract a variant from a string
@@ -1484,7 +1486,7 @@ fn deserialize_internally_tagged_enum(
     cattrs: &attr::Container,
     tag: &str,
 ) -> Fragment {
-    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs, None, None);
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(&Visibility::Inherited, prefix, variants, cattrs, None, None);
     let field_struct_name = field_struct_name(prefix);
 
     // Match arms to extract a variant from a string
@@ -1624,7 +1626,7 @@ fn deserialize_adjacently_tagged_enum(
         split_with_de_lifetime(params);
     let delife = params.borrowed.de_lifetime();
 
-    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs, None, None);
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(&Visibility::Inherited, prefix, variants, cattrs, None, None);
     let field_struct_name = field_struct_name(prefix);
 
     let variant_arms: &Vec<_> = &variants
@@ -2170,6 +2172,7 @@ fn deserialize_untagged_newtype_variant(
 }
 
 fn deserialize_generated_identifier(
+    vis: &Visibility,
     prefix: &str,
     fields: &[(String, Ident, Vec<String>)],
     cattrs: &attr::Container,
@@ -2221,12 +2224,12 @@ fn deserialize_generated_identifier(
 
     quote_block! {
         #[allow(non_camel_case_types)]
-        enum #this #lifetime {
+        #vis enum #this #lifetime {
             #(#field_idents,)*
             #ignore_variant
         }
 
-        struct #visitor_name #flag;
+        #vis struct #visitor_name #flag;
 
         impl<'de> _serde::de::Visitor<'de> for #visitor_name {
             type Value = #this #lifetime;
@@ -2267,6 +2270,7 @@ fn deserialize_generated_identifier_for_map(
     };
 
     deserialize_generated_identifier(
+        &Visibility::Inherited,
         prefix,
         &fields,
         cattrs,
@@ -3574,6 +3578,148 @@ fn derive_embed_struct(
                 #(#extract_values)*
 
                 _serde::__private::Ok(#result)
+            }
+        }
+    }
+}
+
+fn derive_embed_enum_externally(
+    vis: &Visibility,
+    prefix: &str,
+    params: &Parameters,
+    variants: &[Variant],
+    cattrs: &attr::Container,
+) -> TokenStream {
+    let delife = params.borrowed.de_lifetime();
+    let this = &params.this;
+    let (de_impl_generics, de_ty_generics, ty_generics, where_clause) =
+        split_with_de_lifetime(&params);
+
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(
+        vis,
+        prefix,
+        variants,
+        cattrs,
+        // Declaration in Field enum
+        Some(quote!(__unknown,)),
+        // Implementation of `visit_*` methods
+        Some(quote!(_ if self.0 => _serde::__private::Ok(__Field::__unknown),)),
+    );
+
+    // Match arms to extract a variant from a string
+    let variant_arms = variants
+        .iter()
+        .enumerate()
+        .filter(|&(_, variant)| !variant.attrs.skip_deserializing())
+        .map(|(i, variant)| {
+            let variant_name = field_i(i);
+            let block = Match(deserialize_externally_tagged_variant(
+                params, variant, cattrs,
+            ));
+
+            quote! {
+                __Field::#variant_name => #block
+            }
+        });
+
+    let expecting = format!("enum {}", params.type_name());
+    let missing = format!("missing externally tagged enum {}", params.type_name());
+
+    quote! {
+        #variants_stmt
+
+        //FIXME: create unknown variant to fix `test_flatten_struct_enum` test
+        #variant_visitor
+
+        //-----------------------------------------------------------------------------------------
+
+        #vis struct __Storage #de_impl_generics #where_clause {
+            __result: _serde::__private::Option<#this #ty_generics>,
+            __ignore: _serde::__private::PhantomData<&#delife ()>,
+        }
+        impl #de_impl_generics __Storage #de_ty_generics #where_clause {
+            fn consume_variant<__A>(
+                &mut self,
+                __key: __Field,
+                __variant: __A
+            ) -> _serde::__private::Result<#this #ty_generics, __A::Error>
+            where
+                __A: _serde::de::VariantAccess<#delife>,
+            {
+                match __key {
+                    #(#variant_arms)*
+
+                    __Field::__unknown => {
+                        _serde::__private::Err(_serde::de::Error::unknown_variant("", VARIANTS))
+                    },
+                }
+            }
+        }
+        impl #de_impl_generics _serde::de::Storage<#delife> for __Storage #de_ty_generics #where_clause {
+            type Key = __Field;
+
+            #[inline]
+            fn is_known(__key: &Self::Key) -> bool {
+                match __key {
+                    Self::Key::__unknown => false,
+                    _ => true,
+                }
+            }
+
+            fn consume_value<__A>(&mut self, __key: Self::Key, mut __map: __A) -> _serde::__private::Result<__A, __A::Error>
+            where
+                __A: _serde::de::MapAccess<#delife>
+            {
+                self.__result = _serde::__private::Some(try!(self.consume_variant(
+                    __key, _serde::__private::de::AsVariantAccess(&mut __map)
+                )));
+                _serde::__private::Ok(__map)
+            }
+        }
+        impl #de_impl_generics _serde::de::Visitor<#delife> for __Storage #de_ty_generics #where_clause {
+            type Value = #this #ty_generics;
+
+            fn expecting(&self, __formatter: &mut _serde::__private::Formatter) -> _serde::__private::fmt::Result {
+                _serde::__private::Formatter::write_str(__formatter, #expecting)
+            }
+
+            fn visit_enum<__A>(mut self, __data: __A) -> _serde::__private::Result<Self::Value, __A::Error>
+            where
+                __A: _serde::de::EnumAccess<#delife>,
+            {
+                let (__key, __variant) = try!(_serde::de::EnumAccess::variant_seed(__data, __FieldVisitor(false)));
+                self.consume_variant(__key, __variant)
+            }
+        }
+
+        //-----------------------------------------------------------------------------------------
+
+        #[automatically_derived]
+        impl #de_impl_generics _serde::de::DeserializeEmbed<#delife> for #this #ty_generics #where_clause {
+            type Storage = __Storage #de_ty_generics;
+            type KeyVisitor = __FieldVisitor;
+
+            #[inline]
+            fn new_storage() -> Self::Storage {
+                __Storage {
+                    __result: _serde::__private::None,
+                    __ignore: _serde::__private::PhantomData,
+                }
+            }
+
+            #[inline]
+            fn new_visitor() -> Self::KeyVisitor {
+                __FieldVisitor(true)
+            }
+
+            fn deserialize_embed<__E>(__storage: Self::Storage) -> _serde::__private::Result<Self, __E>
+            where
+                __E: _serde::de::Error
+            {
+                match __storage.__result {
+                    _serde::__private::Some(__result) => _serde::__private::Ok(__result),
+                    _serde::__private::None => _serde::__private::Err(__E::custom(#missing)),
+                }
             }
         }
     }
