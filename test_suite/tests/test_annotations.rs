@@ -1853,45 +1853,7 @@ fn test_complex_flatten() {
         f: u32,
     }
 
-    assert_de_tokens(
-        &Outer {
-            y: 0,
-            first: First {
-                a: 1,
-                b: true,
-                c: vec!["a".into(), "b".into()],
-                d: "c".into(),
-                e: Some(2),
-            },
-            second: Second { f: 3 },
-            z: 4,
-        },
-        &[
-            Token::Map { len: None },
-            Token::Str("y"),
-            Token::U32(0),
-            Token::Str("a"),
-            Token::U32(1),
-            Token::Str("b"),
-            Token::Bool(true),
-            Token::Str("c"),
-            Token::Seq { len: Some(2) },
-            Token::Str("a"),
-            Token::Str("b"),
-            Token::SeqEnd,
-            Token::Str("d"),
-            Token::Str("c"),
-            Token::Str("e"),
-            Token::U64(2),
-            Token::Str("f"),
-            Token::U32(3),
-            Token::Str("z"),
-            Token::U32(4),
-            Token::MapEnd,
-        ],
-    );
-
-    assert_ser_tokens(
+    assert_tokens(
         &Outer {
             y: 0,
             first: First {
