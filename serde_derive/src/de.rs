@@ -1305,8 +1305,8 @@ fn deserialize_enum(
             Some(derive_embed_enum_externally(vis, prefix, params, variants, cattrs)),
         ),
         attr::TagType::Internal { tag } => (
-            deserialize_internally_tagged_enum(prefix, params, variants, cattrs, tag),
-            Some(derive_embed(vis, params)),
+            deserialize_internally_tagged_enum(prefix, params, variants, cattrs),
+            Some(derive_embed_enum_internally(vis, prefix, params, variants, cattrs, tag)),
         ),
         attr::TagType::Adjacent { tag, content } => (
             deserialize_adjacently_tagged_enum(prefix, params, variants, cattrs, tag, content),
@@ -1408,10 +1408,8 @@ fn deserialize_internally_tagged_enum(
     params: &Parameters,
     variants: &[Variant],
     cattrs: &attr::Container,
-    tag: &str,
 ) -> Fragment {
     let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(&Visibility::Inherited, prefix, variants, cattrs, None, None);
-    let field_struct_name = field_struct_name(prefix);
 
     // Match arms to extract a variant from a string
     let variants = variants
@@ -1437,29 +1435,9 @@ fn deserialize_internally_tagged_enum(
             _ => None,
         }
     });
-    let variant_arms = variants.map(|(i, variant)| {
-        let variant_name = field_i(i);
-
-        let block = Match(deserialize_internally_tagged_variant(
-            &format!("Variant{}", i),
-            params,
-            variant,
-            cattrs,
-            quote!(__deserializer),
-        ));
-
-        quote! {
-            #field_struct_name::#variant_name => #block
-        }
-    });
-
-    let expecting = format!("internally tagged enum {}", params.type_name());
-    let expecting = cattrs.expecting().unwrap_or(&expecting);
 
     let this = &params.this;
-    let (de_impl_generics, de_ty_generics, ty_generics, where_clause) =
-        split_with_de_lifetime(params);
-    let delife = params.borrowed.de_lifetime();
+    let (_, _, ty_generics, _) = split_with_de_lifetime(params);
 
     quote_block! {
         #variant_visitor
@@ -1467,68 +1445,6 @@ fn deserialize_internally_tagged_enum(
         #(#arms_visitors)*
 
         #variants_stmt
-
-        struct __Visitor #de_impl_generics #where_clause {
-            marker: _serde::__private::PhantomData<#this #ty_generics>,
-            lifetime: _serde::__private::PhantomData<&#delife ()>,
-        }
-
-        impl #de_impl_generics __Visitor #de_ty_generics #where_clause {
-            fn visit<__D>(__tag: #field_struct_name, __deserializer: __D) -> _serde::__private::Result<#this #ty_generics, __D::Error>
-            where
-                __D: _serde::de::Deserializer<#delife>,
-            {
-                match __tag {
-                    #(#variant_arms)*
-                }
-            }
-        }
-
-        impl #de_impl_generics _serde::de::Visitor<#delife> for __Visitor #de_ty_generics #where_clause {
-            type Value = #this #ty_generics;
-
-            fn expecting(&self, __formatter: &mut _serde::__private::Formatter) -> _serde::__private::fmt::Result {
-                _serde::__private::Formatter::write_str(__formatter, #expecting)
-            }
-
-            fn visit_seq<__S>(self, mut __seq: __S) -> _serde::__private::Result<Self::Value, __S::Error>
-            where
-                __S: _serde::de::SeqAccess<#delife>,
-            {
-                match try!(_serde::de::SeqAccess::next_element(&mut __seq)) {
-                    _serde::__private::Some(__tag) => {
-                        Self::visit(__tag, _serde::de::value::SeqAccessDeserializer::new(__seq))
-                    },
-                    _serde::__private::None => _serde::__private::Err(_serde::de::Error::missing_field(#tag)),
-                }
-            }
-
-            fn visit_map<__M>(self, mut __map: __M) -> _serde::__private::Result<Self::Value, __M::Error>
-            where
-                __M: _serde::de::MapAccess<#delife>,
-            {
-                // Read the first field. If it is a tag, immediately deserialize the typed data.
-                // Otherwise, we collect everything until we find the tag, and then deserialize
-                // using ContentDeserializer.
-                match try!(_serde::de::MapAccess::next_key_seed(
-                    &mut __map, _serde::__private::de::TagOrContentVisitor::new(#tag)
-                )) {
-                    _serde::__private::Some(_serde::__private::de::TagOrContent::Tag) => {
-                        let __tag = try!(_serde::de::MapAccess::next_value(&mut __map));
-                        Self::visit(__tag, _serde::de::value::MapAccessDeserializer::new(__map))
-                    },
-                    _serde::__private::Some(_serde::__private::de::TagOrContent::Content(__key)) => {
-                        // Drain map to Content::Map, convert it to ContentDeserializer
-                        // Special handling for tag key -- search them and return as separate result
-                        let (__tag, __deserializer) = try!(_serde::__private::de::drain_map(
-                            __map, #tag, __key
-                        ));
-                        Self::visit(__tag, __deserializer)
-                    },
-                    _serde::__private::None => _serde::__private::Err(_serde::de::Error::missing_field(#tag)),
-                }
-            }
-        }
 
         _serde::Deserializer::deserialize_any(__deserializer, __Visitor {
             marker: _serde::__private::PhantomData::<#this #ty_generics>,
@@ -3643,6 +3559,162 @@ fn derive_embed_enum_externally(
                 match __storage.__result {
                     _serde::__private::Some(__result) => _serde::__private::Ok(__result),
                     _serde::__private::None => _serde::__private::Err(__E::custom(#missing)),
+                }
+            }
+        }
+    }
+}
+
+fn derive_embed_enum_internally(
+    vis: &Visibility,
+    prefix: &str,
+    params: &Parameters,
+    variants: &[Variant],
+    cattrs: &attr::Container,
+    tag: &str,
+) -> TokenStream {
+    let delife = params.borrowed.de_lifetime();
+    let this = &params.this;
+    let (de_impl_generics, de_ty_generics, ty_generics, where_clause) =
+        split_with_de_lifetime(params);
+
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(vis, prefix, variants, cattrs, None, None);
+
+    // Match arms to extract a variant from a string
+    let variant_arms = variants
+        .iter()
+        .enumerate()
+        .filter(|&(_, variant)| !variant.attrs.skip_deserializing())
+        .map(|(i, variant)| {
+            let variant_name = field_i(i);
+
+            let block = Match(deserialize_internally_tagged_variant(
+                prefix,
+                params,
+                variant,
+                cattrs,
+                quote!(__storage.into_deserializer::<__E>()),
+            ));
+
+            quote! {
+                _serde::__private::Some(__Field::#variant_name) => #block
+            }
+        });
+
+    let field_struct_name = field_struct_name(prefix);
+    let visitor_variant_arms = variants
+        .iter()
+        .enumerate()
+        .filter(|&(_, variant)| !variant.attrs.skip_deserializing())
+        .map(|(i, variant)| {
+            let variant_name = field_i(i);
+
+            let block = Match(deserialize_internally_tagged_variant(
+                &format!("Variant{}", i),
+                params,
+                variant,
+                cattrs,
+                quote!(__deserializer),
+            ));
+
+            quote! {
+                #field_struct_name::#variant_name => #block
+            }
+        });
+    let expecting = format!("internally tagged enum {}", params.type_name());
+    let expecting = cattrs.expecting().unwrap_or(&expecting);
+
+    quote! {
+        struct __Visitor #de_impl_generics #where_clause {
+            marker: _serde::__private::PhantomData<#this #ty_generics>,
+            lifetime: _serde::__private::PhantomData<&#delife ()>,
+        }
+
+        impl #de_impl_generics __Visitor #de_ty_generics #where_clause {
+            fn visit<__D>(__tag: #field_struct_name, __deserializer: __D) -> _serde::__private::Result<#this #ty_generics, __D::Error>
+            where
+                __D: _serde::de::Deserializer<#delife>,
+            {
+                match __tag {
+                    #(#visitor_variant_arms)*
+                }
+            }
+        }
+
+        impl #de_impl_generics _serde::de::Visitor<#delife> for __Visitor #de_ty_generics #where_clause {
+            type Value = #this #ty_generics;
+
+            fn expecting(&self, __formatter: &mut _serde::__private::Formatter) -> _serde::__private::fmt::Result {
+                _serde::__private::Formatter::write_str(__formatter, #expecting)
+            }
+
+            fn visit_seq<__S>(self, mut __seq: __S) -> _serde::__private::Result<Self::Value, __S::Error>
+            where
+                __S: _serde::de::SeqAccess<#delife>,
+            {
+                match try!(_serde::de::SeqAccess::next_element(&mut __seq)) {
+                    _serde::__private::Some(__tag) => {
+                        Self::visit(__tag, _serde::de::value::SeqAccessDeserializer::new(__seq))
+                    },
+                    _serde::__private::None => _serde::__private::Err(_serde::de::Error::missing_field(#tag)),
+                }
+            }
+
+            fn visit_map<__M>(self, mut __map: __M) -> _serde::__private::Result<Self::Value, __M::Error>
+            where
+                __M: _serde::de::MapAccess<#delife>,
+            {
+                // Read the first field. If it is a tag, immediately deserialize the typed data.
+                // Otherwise, we collect everything until we find the tag, and then deserialize
+                // using ContentDeserializer.
+                match try!(_serde::de::MapAccess::next_key_seed(
+                    &mut __map, _serde::__private::de::TagOrContentVisitor::new(#tag)
+                )) {
+                    _serde::__private::Some(_serde::__private::de::TagOrContent::Tag) => {
+                        let __tag = try!(_serde::de::MapAccess::next_value(&mut __map));
+                        Self::visit(__tag, _serde::de::value::MapAccessDeserializer::new(__map))
+                    },
+                    _serde::__private::Some(_serde::__private::de::TagOrContent::Content(__key)) => {
+                        // Drain map to Content::Map, convert it to ContentDeserializer
+                        // Special handling for tag key -- search them and return as separate result
+                        let (__tag, __deserializer) = try!(_serde::__private::de::drain_map(
+                            __map, #tag, __key
+                        ));
+                        Self::visit(__tag, __deserializer)
+                    },
+                    _serde::__private::None => _serde::__private::Err(_serde::de::Error::missing_field(#tag)),
+                }
+            }
+        }
+
+        #variants_stmt
+
+        #variant_visitor
+
+        //-----------------------------------------------------------------------------------------
+
+        #[automatically_derived]
+        impl #de_impl_generics _serde::de::DeserializeEmbed<#delife> for #this #ty_generics #where_clause {
+            type Storage = _serde::__private::de::TagOrContentStorage<#delife, __Field>;
+            type KeyVisitor = _serde::__private::de::TagOrContentVisitor<#delife>;
+
+            #[inline]
+            fn new_storage() -> Self::Storage {
+                _serde::__private::de::TagOrContentStorage::new(#tag)
+            }
+
+            #[inline]
+            fn new_visitor() -> Self::KeyVisitor {
+                _serde::__private::de::TagOrContentVisitor::new(#tag)
+            }
+
+            fn deserialize_embed<__E>(__storage: Self::Storage) -> _serde::__private::Result<Self, __E>
+            where
+                __E: _serde::de::Error,
+            {
+                match __storage.tag {
+                    _serde::__private::None => _serde::__private::Err(_serde::de::Error::missing_field(#tag)),
+                    #(#variant_arms)*
                 }
             }
         }

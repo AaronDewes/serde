@@ -10,7 +10,8 @@ use de::{MapAccess, Unexpected};
 pub use self::content::{
     drain_map, Content, ContentDeserializer, ContentRefDeserializer, EnumDeserializer,
     InternallyTaggedUnitVisitor, TagContentOtherField, TagContentOtherFieldVisitor, TagOrContent,
-    TagOrContentField, TagOrContentFieldVisitor, TagOrContentVisitor, UntaggedUnitVisitor,
+    TagOrContentField, TagOrContentFieldVisitor, TagOrContentVisitor, 
+    TagOrContentStorage, UntaggedUnitVisitor,
 };
 
 pub use seed::InPlaceSeed;
@@ -209,7 +210,7 @@ mod content {
     use actually_private;
     use de::{
         self, Deserialize, DeserializeSeed, Deserializer, EnumAccess, Expected, IgnoredAny,
-        MapAccess, SeqAccess, Unexpected, Visitor,
+        MapAccess, SeqAccess, Storage, Unexpected, Visitor,
     };
 
     /// Creates `ContentDeserializer` by consuming map.
@@ -840,6 +841,63 @@ mod content {
             ContentVisitor::new()
                 .visit_enum(visitor)
                 .map(TagOrContent::Content)
+        }
+    }
+
+    /// Storage for temporary holding deserialized data while deserialize
+    /// a flatten internally tagged enum
+    pub struct TagOrContentStorage<'de, T> {
+        /// Value of the tag
+        pub tag: Option<T>,
+        /// Other key-value pairs of a flatten internally tagged enum
+        map: Vec<(Content<'de>, Content<'de>)>,
+        /// Name of the tag
+        tag_name: &'static str,
+    }
+
+    impl<'de, T> TagOrContentStorage<'de, T> {
+        pub fn new(tag_name: &'static str) -> Self {
+            TagOrContentStorage {
+                tag: None,
+                map: Vec::new(),
+                tag_name,
+            }
+        }
+
+        pub fn into_deserializer<E>(self) -> ContentDeserializer<'de, E>
+        where
+            E: de::Error,
+        {
+            ContentDeserializer::<E>::new(Content::Map(self.map))
+        }
+    }
+
+    impl<'de, T> Storage<'de> for TagOrContentStorage<'de, T>
+    where
+        T: Deserialize<'de>,
+    {
+        type Key = TagOrContent<'de>;
+
+        #[inline]
+        fn is_known(_key: &Self::Key) -> bool { true }
+
+        fn consume_value<A>(&mut self, key: Self::Key, mut map: A) -> Result<A, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            match key {
+                TagOrContent::Tag => {
+                    if self.tag.is_some() {
+                        return Err(de::Error::duplicate_field(self.tag_name));
+                    }
+                    self.tag = Some(try!(map.next_value()));
+                },
+                TagOrContent::Content(k) => {
+                    let v = try!(map.next_value());
+                    self.map.push((k, v));
+                },
+            }
+            Ok(map)
         }
     }
 
