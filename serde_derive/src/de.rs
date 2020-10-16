@@ -1317,13 +1317,13 @@ fn prepare_enum_variant_enum(
         }
     };
 
-    let (ignore_variant, fallthrough) = if let Some(other_idx) = other_idx {
+    let fallthrough = if let Some(other_idx) = other_idx {
         let this = field_struct_name(prefix);
         let ignore_variant = variant_names_idents[other_idx].1.clone();
         let fallthrough = quote!(_serde::__private::Ok(#this::#ignore_variant));
-        (None, Some(fallthrough))
+        Some(fallthrough)
     } else {
-        (None, None)
+        None
     };
 
     let variant_visitor = Stmts(deserialize_generated_identifier(
@@ -1331,7 +1331,7 @@ fn prepare_enum_variant_enum(
         &variant_names_idents,
         cattrs,
         true,
-        ignore_variant,
+        None,
         fallthrough,
     ));
 
