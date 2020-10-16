@@ -1324,6 +1324,8 @@ fn deserialize_enum(
 /// # Parameters
 /// - `variants`: list of all variants (skipped also included)
 /// - `cattrs`: attributes of enum being deserialized
+/// - `unknown_variant`: definition of field in enum that represents unknown data
+/// - `unknown_arm`: match part that creates unknown variant of `Field` enum
 ///
 /// Returns tuple:
 /// - `VARIANTS` const with names of all enum variants
@@ -1334,6 +1336,8 @@ fn prepare_enum_variant_enum(
     prefix: &str,
     variants: &[Variant],
     cattrs: &attr::Container,
+    unknown_variant: Option<TokenStream>,
+    unknown_arm: Option<TokenStream>,
 ) -> (TokenStream, Stmts) {
     let mut deserialized_variants = variants
         .iter()
@@ -1371,7 +1375,8 @@ fn prepare_enum_variant_enum(
         &variant_names_idents,
         cattrs,
         true,
-        None,
+        unknown_variant,
+        unknown_arm,
         fallthrough,
     ));
 
@@ -1393,7 +1398,7 @@ fn deserialize_externally_tagged_enum(
     let expecting = format!("enum {}", params.type_name());
     let expecting = cattrs.expecting().unwrap_or(&expecting);
 
-    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs);
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs, None, None);
     let field_struct_name = field_struct_name(prefix);
 
     // Match arms to extract a variant from a string
@@ -1479,7 +1484,7 @@ fn deserialize_internally_tagged_enum(
     cattrs: &attr::Container,
     tag: &str,
 ) -> Fragment {
-    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs);
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs, None, None);
     let field_struct_name = field_struct_name(prefix);
 
     // Match arms to extract a variant from a string
@@ -1619,7 +1624,7 @@ fn deserialize_adjacently_tagged_enum(
         split_with_de_lifetime(params);
     let delife = params.borrowed.de_lifetime();
 
-    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs);
+    let (variants_stmt, variant_visitor) = prepare_enum_variant_enum(prefix, variants, cattrs, None, None);
     let field_struct_name = field_struct_name(prefix);
 
     let variant_arms: &Vec<_> = &variants
@@ -2170,28 +2175,50 @@ fn deserialize_generated_identifier(
     cattrs: &attr::Container,
     is_variant: bool,
     ignore_variant: Option<TokenStream>,
+    unknown_arm: Option<TokenStream>,
     fallthrough: Option<TokenStream>,
 ) -> Fragment {
     let this = field_struct_name(prefix);
     let field_idents: &Vec<_> = &fields.iter().map(|(_, ident, _)| ident).collect();
-
-    let visitor_impl = Stmts(deserialize_identifier(
-        &quote!(#this),
-        fields,
-        is_variant,
-        fallthrough,
-        None,
-        !is_variant && cattrs.has_flatten(),
-        None,
-    ));
+    let visitor_name = Ident::new(&format!("__{}FieldVisitor", prefix), Span::call_site());
 
     let lifetime = if !is_variant && cattrs.has_flatten() {
         Some(quote!(<'de>))
     } else {
         None
     };
+    let (flag, init, seed) = if unknown_arm.is_some() {
+        (
+            Some(quote! { (bool) }),
+            Some(quote! { (false) }),
+            Some(quote! {
+                impl<'de> _serde::de::DeserializeSeed<'de> for #visitor_name {
+                    type Value = #this #lifetime;
 
-    let visitor_name = Ident::new(&format!("__{}FieldVisitor", prefix), Span::call_site());
+                    fn deserialize<__D>(self, __deserializer: __D) -> _serde::__private::Result<Self::Value, __D::Error>
+                    where
+                        __D: _serde::Deserializer<'de>,
+                    {
+                        _serde::Deserializer::deserialize_identifier(__deserializer, self)
+                    }
+                }
+            })
+        )
+    } else {
+        (None, None, None)
+    };
+
+    let visitor_impl = Stmts(deserialize_identifier(
+        &quote!(#this),
+        fields,
+        is_variant,
+        unknown_arm,
+        fallthrough,
+        None,
+        !is_variant && cattrs.has_flatten(),
+        None,
+    ));
+
     quote_block! {
         #[allow(non_camel_case_types)]
         enum #this #lifetime {
@@ -2199,7 +2226,7 @@ fn deserialize_generated_identifier(
             #ignore_variant
         }
 
-        struct #visitor_name;
+        struct #visitor_name #flag;
 
         impl<'de> _serde::de::Visitor<'de> for #visitor_name {
             type Value = #this #lifetime;
@@ -2207,13 +2234,15 @@ fn deserialize_generated_identifier(
             #visitor_impl
         }
 
+        #seed
+
         impl<'de> _serde::Deserialize<'de> for #this #lifetime {
             #[inline]
             fn deserialize<__D>(__deserializer: __D) -> _serde::__private::Result<Self, __D::Error>
             where
                 __D: _serde::Deserializer<'de>,
             {
-                _serde::Deserializer::deserialize_identifier(__deserializer, #visitor_name)
+                _serde::Deserializer::deserialize_identifier(__deserializer, #visitor_name #init)
             }
         }
     }
@@ -2243,6 +2272,7 @@ fn deserialize_generated_identifier_for_map(
         cattrs,
         false,
         ignore_variant,
+        None,
         fallthrough,
     )
 }
@@ -2331,6 +2361,7 @@ fn deserialize_custom_identifier(
         &this,
         &names_idents,
         is_variant,
+        None,
         fallthrough,
         fallthrough_borrowed,
         false,
@@ -2364,6 +2395,7 @@ fn deserialize_identifier(
     this: &TokenStream,
     fields: &[(String, Ident, Vec<String>)],
     is_variant: bool,
+    unknown_arm: Option<TokenStream>,
     fallthrough: Option<TokenStream>,
     fallthrough_borrowed: Option<TokenStream>,
     collect_other_fields: bool,
@@ -2621,6 +2653,7 @@ fn deserialize_identifier(
                 #(
                     #field_strs => _serde::__private::Ok(#constructors),
                 )*
+                #unknown_arm
                 _ => {
                     #value_as_str_content
                     #fallthrough_arm
@@ -2636,6 +2669,7 @@ fn deserialize_identifier(
                 #(
                     #field_bytes => _serde::__private::Ok(#constructors),
                 )*
+                #unknown_arm
                 _ => {
                     #bytes_to_str
                     #value_as_bytes_content
