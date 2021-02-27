@@ -1419,7 +1419,7 @@ fn deserialize_internally_tagged_enum(
             _ => None,
         }
     });
-    let variant_arms: Vec<_> = variants
+    let variant_arms = variants
         .map(|(i, variant)| {
             let variant_name = field_i(i);
 
@@ -1434,8 +1434,7 @@ fn deserialize_internally_tagged_enum(
             quote! {
                 #field_struct_name::#variant_name => #block
             }
-        })
-        .collect();
+        });
 
     let expecting = format!("internally tagged enum {}", params.type_name());
     let expecting = cattrs.expecting().unwrap_or(&expecting);
@@ -1457,6 +1456,17 @@ fn deserialize_internally_tagged_enum(
             lifetime: _serde::__private::PhantomData<&#delife ()>,
         }
 
+        impl #de_impl_generics __Visitor #de_ty_generics #where_clause {
+            fn visit<__D>(__tag: #field_struct_name, __deserializer: __D) -> _serde::__private::Result<#this #ty_generics, __D::Error>
+            where
+                __D: _serde::de::Deserializer<#delife>,
+            {
+                match __tag {
+                    #(#variant_arms)*
+                }
+            }
+        }
+
         impl #de_impl_generics _serde::de::Visitor<#delife> for __Visitor #de_ty_generics #where_clause {
             type Value = #this #ty_generics;
 
@@ -1470,11 +1480,7 @@ fn deserialize_internally_tagged_enum(
             {
                 match try!(_serde::de::SeqAccess::next_element(&mut __seq)) {
                     _serde::__private::Some(__tag) => {
-                        let __deserializer = _serde::de::value::SeqAccessDeserializer::new(__seq);
-
-                        match __tag {
-                            #(#variant_arms)*
-                        }
+                        Self::visit(__tag, _serde::de::value::SeqAccessDeserializer::new(__seq))
                     },
                     _serde::__private::None => _serde::__private::Err(_serde::de::Error::missing_field(#tag)),
                 }
@@ -1492,11 +1498,7 @@ fn deserialize_internally_tagged_enum(
                 )) {
                     _serde::__private::Some(_serde::__private::de::TagOrContent::Tag) => {
                         let __tag = try!(_serde::de::MapAccess::next_value(&mut __map));
-                        let __deserializer = _serde::de::value::MapAccessDeserializer::new(__map);
-
-                        match __tag {
-                            #(#variant_arms)*
-                        }
+                        Self::visit(__tag, _serde::de::value::MapAccessDeserializer::new(__map))
                     },
                     _serde::__private::Some(_serde::__private::de::TagOrContent::Content(__key)) => {
                         // Drain map to Content::Map, convert it to ContentDeserializer
@@ -1504,10 +1506,7 @@ fn deserialize_internally_tagged_enum(
                         let (__tag, __deserializer) = try!(_serde::__private::de::drain_map(
                             __map, #tag, __key
                         ));
-
-                        match __tag {
-                            #(#variant_arms)*
-                        }
+                        Self::visit(__tag, __deserializer)
                     },
                     _serde::__private::None => _serde::__private::Err(_serde::de::Error::missing_field(#tag)),
                 }
