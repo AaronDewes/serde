@@ -1002,7 +1002,13 @@ fn deserialize_struct_visitor(
     };
     let field_visitor = Stmts(field_visitor);
     let fields_stmt = fields_stmt.map(Stmts);
-    let visit_map = Stmts(deserialize_map(field_struct_name(prefix), &type_path, params, fields, cattrs));
+    let visit_map = Stmts(deserialize_map(
+        field_struct_name(prefix),
+        &type_path,
+        params,
+        fields,
+        cattrs,
+    ));
 
     let visitor_name = visitor_struct_name(prefix);
 
@@ -1239,7 +1245,9 @@ fn deserialize_enum(
     cattrs: &attr::Container,
 ) -> Fragment {
     match cattrs.tag() {
-        attr::TagType::External => deserialize_externally_tagged_enum(prefix, params, variants, cattrs),
+        attr::TagType::External => {
+            deserialize_externally_tagged_enum(prefix, params, variants, cattrs)
+        }
         attr::TagType::Internal { tag } => {
             deserialize_internally_tagged_enum(prefix, params, variants, cattrs, tag)
         }
@@ -1419,22 +1427,21 @@ fn deserialize_internally_tagged_enum(
             _ => None,
         }
     });
-    let variant_arms = variants
-        .map(|(i, variant)| {
-            let variant_name = field_i(i);
+    let variant_arms = variants.map(|(i, variant)| {
+        let variant_name = field_i(i);
 
-            let block = Match(deserialize_internally_tagged_variant(
-                &format!("Variant{}", i),
-                params,
-                variant,
-                cattrs,
-                quote!(__deserializer),
-            ));
+        let block = Match(deserialize_internally_tagged_variant(
+            &format!("Variant{}", i),
+            params,
+            variant,
+            cattrs,
+            quote!(__deserializer),
+        ));
 
-            quote! {
-                #field_struct_name::#variant_name => #block
-            }
-        });
+        quote! {
+            #field_struct_name::#variant_name => #block
+        }
+    });
 
     let expecting = format!("internally tagged enum {}", params.type_name());
     let expecting = cattrs.expecting().unwrap_or(&expecting);
@@ -2575,7 +2582,8 @@ fn deserialize_struct_as_struct_visitor(
         }
     };
 
-    let field_visitor = deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
+    let field_visitor =
+        deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
 
     (field_visitor, Some(fields_stmt))
 }
@@ -2598,7 +2606,8 @@ fn deserialize_struct_as_map_visitor(
         })
         .collect();
 
-    let field_visitor = deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
+    let field_visitor =
+        deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
 
     (field_visitor, None)
 }
@@ -2849,7 +2858,8 @@ fn deserialize_struct_as_struct_in_place_visitor(
         }
     };
 
-    let field_visitor = deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
+    let field_visitor =
+        deserialize_generated_identifier(prefix, &field_names_idents, cattrs, false, None);
 
     let visit_map = deserialize_map_in_place(field_struct_name(prefix), params, fields, cattrs);
 
