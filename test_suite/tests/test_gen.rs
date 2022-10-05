@@ -902,3 +902,74 @@ pub struct RemotePackedNonCopyDef {
 impl Drop for RemotePackedNonCopyDef {
     fn drop(&mut self) {}
 }
+
+//////////////////////////////////////////////////////////////////////////
+
+/// Regression test for <https://github.com/serde-rs/serde/issues/1904>
+#[allow(dead_code)]
+mod enum_with_flatten_and_tuple {
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct Nested;
+
+    #[derive(Deserialize)]
+    enum ExternallyTagged1 {
+        Tuple(f64, String),
+        Flatten {
+            #[serde(flatten)]
+            nested: Nested,
+        },
+    }
+
+    #[derive(Deserialize)]
+    enum ExternallyTagged2 {
+        Flatten {
+            #[serde(flatten)]
+            nested: Nested,
+        },
+        Tuple(f64, String),
+    }
+
+    // Internally tagged enums cannot contain tuple variants so not tested here
+
+    #[derive(Deserialize)]
+    #[serde(tag = "tag", content = "content")]
+    enum AdjacentlyTagged1 {
+        Tuple(f64, String),
+        Flatten {
+            #[serde(flatten)]
+            nested: Nested,
+        },
+    }
+
+    #[derive(Deserialize)]
+    #[serde(tag = "tag", content = "content")]
+    enum AdjacentlyTagged2 {
+        Flatten {
+            #[serde(flatten)]
+            nested: Nested,
+        },
+        Tuple(f64, String),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Untagged1 {
+        Tuple(f64, String),
+        Flatten {
+            #[serde(flatten)]
+            nested: Nested,
+        },
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Untagged2 {
+        Flatten {
+            #[serde(flatten)]
+            nested: Nested,
+        },
+        Tuple(f64, String),
+    }
+}
