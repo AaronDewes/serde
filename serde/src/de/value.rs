@@ -1070,10 +1070,43 @@ where
         visitor.visit_seq(self.seq)
     }
 
+    fn deserialize_enum<V>(
+        self,
+        _name: &str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_enum(self)
+    }
+
     forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+impl<'de, A> de::EnumAccess<'de> for SeqAccessDeserializer<A>
+where
+    A: de::SeqAccess<'de>,
+{
+    type Error = A::Error;
+    type Variant = private::SeqAsEnum<A>;
+
+    fn variant_seed<T>(mut self, seed: T) -> Result<(T::Value, Self::Variant), Self::Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match try!(self.seq.next_element_seed(seed)) {
+            Some(key) => Ok((key, private::seq_as_enum(self.seq))),
+            None => Err(de::Error::invalid_length(
+                self.seq.size_hint().unwrap_or(0),
+                &"enum tag",
+            )),
+        }
     }
 }
 
@@ -1551,7 +1584,10 @@ where
 mod private {
     use lib::*;
 
-    use de::{self, DeserializeSeed, Deserializer, MapAccess, Unexpected, VariantAccess, Visitor};
+    use de::{
+        self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Unexpected, VariantAccess,
+        Visitor,
+    };
 
     pub struct UnitOnly<E> {
         marker: PhantomData<E>,
@@ -1652,6 +1688,77 @@ mod private {
             V: Visitor<'de>,
         {
             self.map.next_value_seed(SeedStructVariant { visitor })
+        }
+    }
+
+    pub struct SeqAsEnum<A> {
+        seq: A,
+    }
+
+    pub fn seq_as_enum<A>(seq: A) -> SeqAsEnum<A> {
+        SeqAsEnum { seq: seq }
+    }
+
+    impl<'de, A> VariantAccess<'de> for SeqAsEnum<A>
+    where
+        A: SeqAccess<'de>,
+    {
+        type Error = A::Error;
+
+        fn unit_variant(mut self) -> Result<(), Self::Error> {
+            // Even when content is missing, it is also acceptable
+            // So both ["Unit"] and ["Unit", ()] is acceptable
+            try!(self.seq.next_element::<()>());
+            Ok(())
+        }
+
+        fn newtype_variant_seed<T>(mut self, seed: T) -> Result<T::Value, Self::Error>
+        where
+            T: DeserializeSeed<'de>,
+        {
+            match try!(self.seq.next_element_seed(seed)) {
+                Some(value) => Ok(value),
+                None => Err(de::Error::invalid_length(
+                    self.seq.size_hint().unwrap_or(0) + 1,
+                    &"content of newtype variant",
+                )),
+            }
+        }
+
+        fn tuple_variant<V>(mut self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            match try!(self.seq.next_element_seed(SeedTupleVariant {
+                len: len,
+                visitor: visitor,
+            })) {
+                Some(value) => Ok(value),
+                None => Err(de::Error::invalid_length(
+                    self.seq.size_hint().unwrap_or(0) + 1,
+                    &"content of tuple variant",
+                )),
+            }
+        }
+
+        fn struct_variant<V>(
+            mut self,
+            _fields: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            match try!(self
+                .seq
+                .next_element_seed(SeedStructVariant { visitor: visitor }))
+            {
+                Some(value) => Ok(value),
+                None => Err(de::Error::invalid_length(
+                    self.seq.size_hint().unwrap_or(0) + 1,
+                    &"content of struct variant",
+                )),
+            }
         }
     }
 
