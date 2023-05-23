@@ -704,41 +704,11 @@ fn deserialize_seq(
                 let #var = #default;
             }
         } else {
-            let visit = match field.attrs.deserialize_with() {
-                None => {
-                    let field_ty = field.ty;
-                    let span = field.original.span();
-                    let func =
-                        quote_spanned!(span=> _serde::de::SeqAccess::next_element::<#field_ty>);
-                    quote!(#func(&mut __seq)?)
-                }
-                Some(path) => {
-                    let (wrapper, wrapper_ty) = wrap_deserialize_field_with(params, field.ty, path);
-                    quote!({
-                        #wrapper
-                        _serde::__private::Option::map(
-                            _serde::de::SeqAccess::next_element::<#wrapper_ty>(&mut __seq)?,
-                            |__wrap| __wrap.value)
-                    })
-                }
-            };
-            let value_if_none = match field.attrs.default() {
-                attr::Default::Default => quote!(_serde::__private::Default::default()),
-                attr::Default::Path(path) => quote!(#path()),
-                attr::Default::None => quote!(
-                    return _serde::__private::Err(_serde::de::Error::invalid_length(#index_in_seq, &#expecting));
-                ),
-            };
-            let assign = quote! {
-                let #var = match #visit {
-                    _serde::__private::Some(__value) => __value,
-                    _serde::__private::None => {
-                        #value_if_none
-                    }
-                };
-            };
+            let read = read_from_seq_access(params, index_in_seq, field, expecting);
             index_in_seq += 1;
-            assign
+            quote! {
+                let #var = #read;
+            }
         }
     });
 
@@ -779,6 +749,48 @@ fn deserialize_seq(
         #let_default
         #(#let_values)*
         _serde::__private::Ok(#result)
+    }
+}
+
+/// Generates code that reads specified field from a `SeqAccess`. The field is located at `index`
+/// position in the list of fields in the serialized form.
+fn read_from_seq_access(
+    params: &Parameters,
+    index: usize,
+    field: &Field,
+    expecting: &str,
+) -> TokenStream {
+    let visit = match field.attrs.deserialize_with() {
+        None => {
+            let field_ty = field.ty;
+            let span = field.original.span();
+            let func = quote_spanned!(span=> _serde::de::SeqAccess::next_element::<#field_ty>);
+            quote!(#func(&mut __seq)?)
+        }
+        Some(path) => {
+            let (wrapper, wrapper_ty) = wrap_deserialize_field_with(params, field.ty, path);
+            quote!({
+                #wrapper
+                _serde::__private::Option::map(
+                    _serde::de::SeqAccess::next_element::<#wrapper_ty>(&mut __seq)?,
+                    |__wrap| __wrap.value)
+            })
+        }
+    };
+    let value_if_none = match field.attrs.default() {
+        attr::Default::Default => quote!(_serde::__private::Default::default()),
+        attr::Default::Path(path) => quote!(#path()),
+        attr::Default::None => quote!(
+            return _serde::__private::Err(_serde::de::Error::invalid_length(#index, &#expecting));
+        ),
+    };
+    quote! {
+        match #visit {
+            _serde::__private::Some(__value) => __value,
+            _serde::__private::None => {
+                #value_if_none
+            }
+        }
     }
 }
 
