@@ -176,7 +176,7 @@ fn serialize_body(cont: &Container, params: &Parameters) -> Fragment {
                 serialize_tuple_struct(params, fields, &cont.attrs)
             }
             Data::Struct(Style::Newtype, fields) => {
-                serialize_newtype_struct(params, &fields[0], &cont.attrs)
+                serialize_newtype_struct(params, 0, &fields[0], &cont.attrs)
             }
             Data::Struct(Style::Unit, _) => serialize_unit_struct(&cont.attrs),
         }
@@ -225,6 +225,7 @@ fn serialize_unit_struct(cattrs: &attr::Container) -> Fragment {
 
 fn serialize_newtype_struct(
     params: &Parameters,
+    index: usize,
     field: &Field,
     cattrs: &attr::Container,
 ) -> Fragment {
@@ -235,14 +236,7 @@ fn serialize_newtype_struct(
 
     let type_name = cattrs.name().serialize_name();
 
-    let mut field_expr = get_member(
-        params,
-        field,
-        &Member::Unnamed(Index {
-            index: 0,
-            span: Span::call_site(),
-        }),
-    );
+    let mut field_expr = get_member(params, field, &Member::Unnamed(Index::from(index)));
     if let Some(path) = field.attrs.serialize_with() {
         field_expr = wrap_serialize_field_with(params, field.ty, path, &field_expr);
     }
@@ -269,6 +263,14 @@ fn serialize_tuple_struct(
         .enumerate()
         .filter(|(_, field)| !field.attrs.skip_serializing())
         .peekable();
+
+    match serialized_fields.clone().count() {
+        1 => {
+            let (index, field) = serialized_fields.next().unwrap();
+            return serialize_newtype_struct(params, index, field, cattrs);
+        }
+        _ => {}
+    }
 
     let let_mut = mut_if(serialized_fields.peek().is_some());
 

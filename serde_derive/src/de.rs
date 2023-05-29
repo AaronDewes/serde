@@ -505,8 +505,6 @@ fn deserialize_tuple(
     };
     let expecting = cattrs.expecting().unwrap_or(&expecting);
 
-    let nfields = fields.len();
-
     let visit_newtype_struct = match form {
         TupleForm::Tuple if field_count == 1 => {
             let visit_newtype_struct = Stmts(read_fields_in_order(
@@ -564,7 +562,7 @@ fn deserialize_tuple(
         }
     };
     let dispatch = match form {
-        TupleForm::Tuple if field_count != 0 && nfields == 1 => {
+        TupleForm::Tuple if field_count == 1 => {
             let type_name = cattrs.name().deserialize_name();
             quote! {
                 _serde::Deserializer::deserialize_newtype_struct(__deserializer, #type_name, #visitor_expr)
@@ -646,8 +644,6 @@ fn deserialize_tuple_in_place(
     };
     let expecting = cattrs.expecting().unwrap_or(&expecting);
 
-    let nfields = fields.len();
-
     let visit_newtype_struct = if !is_enum && field_count == 1 {
         // We deserialize newtype, so only one field is not skipped
         let index = fields
@@ -660,7 +656,7 @@ fn deserialize_tuple_in_place(
         };
         // Deserialize and write defaults if at least one field is skipped,
         // otherwise only deserialize
-        if nfields > 1 {
+        if fields.len() > 1 {
             let write_defaults = fields.iter().enumerate().filter_map(|(index, field)| {
                 if field.attrs.skip_deserializing() {
                     let index = Index::from(index);
@@ -708,7 +704,7 @@ fn deserialize_tuple_in_place(
         quote!(_serde::Deserializer::deserialize_tuple(#deserializer, #field_count, #visitor_expr))
     } else if is_enum {
         quote!(_serde::de::VariantAccess::tuple_variant(__variant, #field_count, #visitor_expr))
-    } else if field_count != 0 && nfields == 1 {
+    } else if field_count == 1 {
         let type_name = cattrs.name().deserialize_name();
         quote!(_serde::Deserializer::deserialize_newtype_struct(__deserializer, #type_name, #visitor_expr))
     } else {
