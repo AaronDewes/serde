@@ -18,7 +18,7 @@ struct Struct {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "tag")]
 enum InternallyTagged {
     Unit,
     NewtypeMap(BTreeMap<String, String>),
@@ -35,7 +35,7 @@ fn unit() {
                 name: "InternallyTagged",
                 len: 1,
             },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Unit"),
             Token::StructEnd,
         ],
@@ -57,7 +57,7 @@ fn newtype_map() {
         &InternallyTagged::NewtypeMap(BTreeMap::new()),
         &[
             Token::Map { len: Some(1) },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("NewtypeMap"),
             Token::MapEnd,
         ],
@@ -84,7 +84,7 @@ fn newtype_struct() {
                 name: "Struct",
                 len: 2,
             },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("NewtypeStruct"),
             Token::Str("f"),
             Token::U8(6),
@@ -112,7 +112,7 @@ fn struct_() {
                 name: "InternallyTagged",
                 len: 2,
             },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Struct"),
             Token::Str("a"),
             Token::U8(1),
@@ -135,13 +135,13 @@ fn struct_() {
 fn wrong_tag() {
     assert_de_tokens_error::<InternallyTagged>(
         &[Token::Map { len: Some(0) }, Token::MapEnd],
-        "missing field `type`",
+        "missing field `tag`",
     );
 
     assert_de_tokens_error::<InternallyTagged>(
         &[
             Token::Map { len: Some(1) },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Z"),
             Token::MapEnd,
         ],
@@ -153,7 +153,7 @@ mod string_and_bytes {
     use super::*;
 
     #[derive(Debug, PartialEq, Deserialize)]
-    #[serde(tag = "type")]
+    #[serde(tag = "tag")]
     enum InternallyTagged {
         String {
             string: String,
@@ -175,7 +175,7 @@ mod string_and_bytes {
                     name: "String",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("String"),
                 Token::Str("string"),
                 Token::Str("\0"),
@@ -192,7 +192,7 @@ mod string_and_bytes {
                     name: "String",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("String"),
                 Token::Str("string"),
                 Token::String("\0"),
@@ -212,7 +212,7 @@ mod string_and_bytes {
                     name: "String",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("String"),
                 Token::Str("string"),
                 Token::Bytes(b"\0"),
@@ -229,7 +229,7 @@ mod string_and_bytes {
                     name: "String",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("String"),
                 Token::Str("string"),
                 Token::ByteBuf(b"\0"),
@@ -247,7 +247,7 @@ mod string_and_bytes {
                     name: "Bytes",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("Bytes"),
                 Token::Str("bytes"),
                 Token::Str("\0"),
@@ -262,7 +262,7 @@ mod string_and_bytes {
                     name: "Bytes",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("Bytes"),
                 Token::Str("bytes"),
                 Token::String("\0"),
@@ -280,7 +280,7 @@ mod string_and_bytes {
                     name: "Bytes",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("Bytes"),
                 Token::Str("bytes"),
                 Token::Bytes(b"\0"),
@@ -295,7 +295,7 @@ mod string_and_bytes {
                     name: "Bytes",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("Bytes"),
                 Token::Str("bytes"),
                 Token::ByteBuf(b"\0"),
@@ -313,7 +313,7 @@ mod string_and_bytes {
                     name: "Bytes",
                     len: 2,
                 },
-                Token::Str("type"),
+                Token::Str("tag"),
                 Token::Str("Bytes"),
                 Token::Str("bytes"),
                 Token::Seq { len: Some(1) },
@@ -333,7 +333,7 @@ fn struct_variant_containing_unit_variant() {
     }
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "action")]
+    #[serde(tag = "tag")]
     pub enum Message {
         Log { level: Level },
     }
@@ -357,7 +357,7 @@ fn struct_variant_containing_unit_variant() {
                 name: "Message",
                 len: 2,
             },
-            Token::Str("action"),
+            Token::Str("tag"),
             Token::Str("Log"),
             Token::Str("level"),
             Token::Enum { name: "Level" },
@@ -371,7 +371,7 @@ fn struct_variant_containing_unit_variant() {
         &Message::Log { level: Level::Info },
         &[
             Token::Map { len: Some(2) },
-            Token::Str("action"),
+            Token::Str("tag"),
             Token::Str("Log"),
             Token::Str("level"),
             Token::Enum { name: "Level" },
@@ -397,7 +397,7 @@ fn struct_variant_containing_unit_variant() {
 #[test]
 fn borrow() {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "type")]
+    #[serde(tag = "tag")]
     enum Input<'a> {
         Package { name: &'a str },
     }
@@ -409,7 +409,7 @@ fn borrow() {
                 name: "Input",
                 len: 2,
             },
-            Token::BorrowedStr("type"),
+            Token::BorrowedStr("tag"),
             Token::BorrowedStr("Package"),
             Token::BorrowedStr("name"),
             Token::BorrowedStr("borrowed"),
@@ -421,7 +421,7 @@ fn borrow() {
 #[test]
 fn newtype_variant_containing_externally_tagged_enum() {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "type")]
+    #[serde(tag = "tag")]
     enum Outer {
         Inner(Inner),
     }
@@ -438,7 +438,7 @@ fn newtype_variant_containing_externally_tagged_enum() {
         &Outer::Inner(Inner::Unit),
         &[
             Token::Map { len: Some(2) },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Inner"),
             Token::Str("Unit"),
             Token::Unit,
@@ -450,7 +450,7 @@ fn newtype_variant_containing_externally_tagged_enum() {
         &Outer::Inner(Inner::Newtype(1)),
         &[
             Token::Map { len: Some(2) },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Inner"),
             Token::Str("Newtype"),
             Token::U8(1),
@@ -465,7 +465,7 @@ fn newtype_variant_containing_externally_tagged_enum() {
         &Outer::Inner(Inner::Tuple(1, 1)),
         &[
             Token::Map { len: Some(2) },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Inner"),
             Token::Str("Tuple"),
             Token::TupleStruct {
@@ -486,7 +486,7 @@ fn newtype_variant_containing_externally_tagged_enum() {
         &Outer::Inner(Inner::Struct { f: 1 }),
         &[
             Token::Map { len: Some(2) },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Inner"),
             Token::Str("Struct"),
             Token::Struct {
@@ -507,7 +507,7 @@ fn newtype_variant_containing_externally_tagged_enum() {
         &Outer::Inner(Inner::Struct { f: 1 }),
         &[
             Token::Map { len: Some(2) },
-            Token::Str("type"),
+            Token::Str("tag"),
             Token::Str("Inner"),
             Token::Str("Struct"),
             Token::Seq { len: Some(1) },
@@ -524,7 +524,7 @@ fn newtype_variant_containing_unit_struct() {
     struct Info;
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "topic")]
+    #[serde(tag = "tag")]
     enum Message {
         Info(Info),
     }
@@ -533,7 +533,7 @@ fn newtype_variant_containing_unit_struct() {
         &Message::Info(Info),
         &[
             Token::Map { len: Some(1) },
-            Token::Str("topic"),
+            Token::Str("tag"),
             Token::Str("Info"),
             Token::MapEnd,
         ],
@@ -546,7 +546,7 @@ fn newtype_variant_containing_unit_struct() {
                 name: "Message",
                 len: 1,
             },
-            Token::Str("topic"),
+            Token::Str("tag"),
             Token::Str("Info"),
             Token::StructEnd,
         ],
@@ -565,7 +565,7 @@ fn newtype_variant_containing_unit_struct() {
 #[test]
 fn with_skipped_conflict() {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "t")]
+    #[serde(tag = "tag")]
     enum Data {
         A,
         #[serde(skip)]
@@ -588,7 +588,7 @@ fn with_skipped_conflict() {
                 name: "Data",
                 len: 1,
             },
-            Token::Str("t"),
+            Token::Str("tag"),
             Token::Str("C"),
             Token::StructEnd,
         ],
@@ -598,7 +598,7 @@ fn with_skipped_conflict() {
 #[test]
 fn containing_flatten() {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "t")]
+    #[serde(tag = "tag")]
     enum Data {
         A {
             a: i32,
@@ -621,7 +621,7 @@ fn containing_flatten() {
         &data,
         &[
             Token::Map { len: None },
-            Token::Str("t"),
+            Token::Str("tag"),
             Token::Str("A"),
             Token::Str("a"),
             Token::I32(0),
@@ -635,7 +635,7 @@ fn containing_flatten() {
 #[test]
 fn newtype_variant_containing_unit() {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "t")]
+    #[serde(tag = "tag")]
     enum Data {
         A(()),
     }
@@ -644,7 +644,7 @@ fn newtype_variant_containing_unit() {
         &Data::A(()),
         &[
             Token::Map { len: Some(1) },
-            Token::Str("t"),
+            Token::Str("tag"),
             Token::Str("A"),
             Token::MapEnd,
         ],
@@ -654,7 +654,7 @@ fn newtype_variant_containing_unit() {
 #[test]
 fn unit_variant_with_unknown_fields() {
     #[derive(Debug, PartialEq, Deserialize)]
-    #[serde(tag = "t")]
+    #[serde(tag = "tag")]
     enum Data {
         A,
     }
@@ -665,7 +665,7 @@ fn unit_variant_with_unknown_fields() {
         &data,
         &[
             Token::Map { len: None },
-            Token::Str("t"),
+            Token::Str("tag"),
             Token::Str("A"),
             Token::Str("b"),
             Token::I32(0),
