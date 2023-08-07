@@ -21,6 +21,14 @@ struct Struct {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+enum Enum {
+    Unit,
+    Newtype(u8),
+    Tuple(u8, u8),
+    Struct { f: u8 },
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "tag")]
 enum InternallyTagged {
     Unit,
@@ -339,30 +347,27 @@ mod string_and_bytes {
 #[test]
 fn struct_variant_containing_unit_variant() {
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    pub enum Level {
-        Info,
-    }
-
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
     #[serde(tag = "tag")]
-    pub enum Message {
-        Log { level: Level },
+    enum Message {
+        Log { level: Enum },
     }
 
     // Canary test that ensures that we use adequate enum representation that
     // is possible to deserialize regardless of possible buffering in internally
     // tagged enum implementation
     assert_de_tokens(
-        &Level::Info,
+        &Enum::Unit,
         &[
-            Token::Enum { name: "Level" },
-            Token::BorrowedStr("Info"),
+            Token::Enum { name: "Enum" },
+            Token::BorrowedStr("Unit"),
             Token::Unit,
         ],
     );
 
+    let value = Message::Log { level: Enum::Unit };
+
     assert_de_tokens(
-        &Message::Log { level: Level::Info },
+        &value,
         &[
             Token::Struct {
                 name: "Message",
@@ -371,34 +376,34 @@ fn struct_variant_containing_unit_variant() {
             Token::Str("tag"),
             Token::Str("Log"),
             Token::Str("level"),
-            Token::Enum { name: "Level" },
-            Token::BorrowedStr("Info"),
+            Token::Enum { name: "Enum" },
+            Token::BorrowedStr("Unit"),
             Token::Unit,
             Token::StructEnd,
         ],
     );
 
     assert_de_tokens(
-        &Message::Log { level: Level::Info },
+        &value,
         &[
             Token::Map { len: Some(2) },
             Token::Str("tag"),
             Token::Str("Log"),
             Token::Str("level"),
-            Token::Enum { name: "Level" },
-            Token::BorrowedStr("Info"),
+            Token::Enum { name: "Enum" },
+            Token::BorrowedStr("Unit"),
             Token::Unit,
             Token::MapEnd,
         ],
     );
 
     assert_de_tokens(
-        &Message::Log { level: Level::Info },
+        &value,
         &[
             Token::Seq { len: Some(2) },
             Token::Str("Log"),
-            Token::Enum { name: "Level" },
-            Token::BorrowedStr("Info"),
+            Token::Enum { name: "Enum" },
+            Token::BorrowedStr("Unit"),
             Token::Unit,
             Token::SeqEnd,
         ],
@@ -435,14 +440,6 @@ fn newtype_variant_containing_externally_tagged_enum() {
     #[serde(tag = "tag")]
     enum Outer {
         Inner(Enum),
-    }
-
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    enum Enum {
-        Unit,
-        Newtype(u8),
-        Tuple(u8, u8),
-        Struct { f: u8 },
     }
 
     assert_tokens(
