@@ -953,17 +953,9 @@ fn deserialize_struct(
 
     let field_names_idents: Vec<_> = fields
         .iter()
-        .enumerate()
         // Skip fields that shouldn't be deserialized or that were flattened,
         // so they don't appear in the storage in their literal form
-        .filter(|&(_, field)| !field.attrs.skip_deserializing() && !field.attrs.flatten())
-        .map(|(i, field)| {
-            (
-                field.attrs.name().deserialize_name(),
-                field_i(i),
-                field.attrs.aliases(),
-            )
-        })
+        .filter(|field| !field.attrs.skip_deserializing() && !field.attrs.flatten())
         .collect();
     let (consts, field, field_seed) = deserialize_field_identifier(&field_names_idents, cattrs);
 
@@ -1019,7 +1011,7 @@ fn deserialize_struct(
     } else {
         let field_names = field_names_idents
             .iter()
-            .flat_map(|&(_, _, aliases)| aliases);
+            .flat_map(|field| field.attrs.aliases());
 
         Some(quote! {
             #[doc(hidden)]
@@ -1113,15 +1105,7 @@ fn deserialize_struct_in_place(
 
     let field_names_idents: Vec<_> = fields
         .iter()
-        .enumerate()
-        .filter(|&(_, field)| !field.attrs.skip_deserializing())
-        .map(|(i, field)| {
-            (
-                field.attrs.name().deserialize_name(),
-                field_i(i),
-                field.attrs.aliases(),
-            )
-        })
+        .filter(|field| !field.attrs.skip_deserializing())
         .collect();
 
     let (consts, field, field_seed) = deserialize_field_identifier(&field_names_idents, cattrs);
@@ -1137,7 +1121,7 @@ fn deserialize_struct_in_place(
     ));
     let field_names = field_names_idents
         .iter()
-        .flat_map(|&(_, _, aliases)| aliases);
+        .flat_map(|field| field.attrs.aliases());
     let type_name = cattrs.name().deserialize_name();
 
     let in_place_impl_generics = de_impl_generics.in_place();
@@ -2038,7 +2022,7 @@ fn deserialize_generated_identifier(
 /// Generates enum and its `Deserialize` implementation that represents each
 /// non-skipped field of the struct
 fn deserialize_field_identifier(
-    fields: &[(&str, Ident, &BTreeSet<String>)],
+    fields: &[&Field],
     cattrs: &attr::Container,
 ) -> (TokenStream, TokenStream, TokenStream) {
     let (field, field_seed) = if cattrs.has_flatten() {
@@ -2058,10 +2042,11 @@ fn deserialize_field_identifier(
         )
     };
 
-    // `aliases` also contains a main name
-    let aliases = fields
-        .iter()
-        .map(|(_, _, aliases)| quote!(&[ #(#aliases),* ]));
+    let aliases = fields.iter().map(|field| {
+        // `aliases` also contains a main name
+        let aliases = field.attrs.aliases();
+        quote!(&[ #(#aliases),* ])
+    });
     let consts = quote! {
         #[doc(hidden)]
         const ALIASES: &[&[&str]] = &[ #(#aliases),* ];
