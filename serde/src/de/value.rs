@@ -174,6 +174,17 @@ where
     }
 }
 
+impl<'de, E> IntoDeserializer<'de, E> for UnitDeserializer<E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
 impl<E> Debug for UnitDeserializer<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.debug_struct("UnitDeserializer").finish()
@@ -219,6 +230,18 @@ where
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+#[cfg(feature = "unstable")]
+impl<'de, E> IntoDeserializer<'de, E> for NeverDeserializer<E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
     }
 }
 
@@ -273,6 +296,17 @@ macro_rules! primitive_deserializer {
                 V: de::Visitor<'de>,
             {
                 visitor.$method(self.value $($cast)*)
+            }
+        }
+
+        impl<'de, E> IntoDeserializer<'de, E> for $name<E>
+        where
+            E: de::Error,
+        {
+            type Deserializer = Self;
+
+            fn into_deserializer(self) -> Self {
+                self
             }
         }
 
@@ -369,6 +403,17 @@ where
     }
 }
 
+impl<'de, E> IntoDeserializer<'de, E> for U32Deserializer<E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
 impl<'de, E> de::EnumAccess<'de> for U32Deserializer<E>
 where
     E: de::Error,
@@ -458,6 +503,17 @@ where
     }
 }
 
+impl<'de, 'a, E> IntoDeserializer<'de, E> for StrDeserializer<'a, E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
 impl<'de, 'a, E> de::EnumAccess<'de> for StrDeserializer<'a, E>
 where
     E: de::Error,
@@ -534,6 +590,17 @@ where
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct identifier ignored_any
+    }
+}
+
+impl<'de, E> IntoDeserializer<'de, E> for BorrowedStrDeserializer<'de, E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
     }
 }
 
@@ -635,6 +702,18 @@ where
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct identifier ignored_any
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, E> IntoDeserializer<'de, E> for StringDeserializer<E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
     }
 }
 
@@ -745,6 +824,18 @@ where
 }
 
 #[cfg(any(feature = "std", feature = "alloc"))]
+impl<'de, 'a, E> IntoDeserializer<'de, E> for CowStrDeserializer<'a, E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
 impl<'de, 'a, E> de::EnumAccess<'de> for CowStrDeserializer<'a, E>
 where
     E: de::Error,
@@ -821,6 +912,17 @@ where
     }
 }
 
+impl<'de, 'a, E> IntoDeserializer<'de, E> for BytesDeserializer<'a, E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
 impl<'a, E> Debug for BytesDeserializer<'a, E> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter
@@ -866,6 +968,17 @@ where
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+impl<'de, E> IntoDeserializer<'de, E> for BorrowedBytesDeserializer<'de, E>
+where
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
     }
 }
 
@@ -945,6 +1058,19 @@ where
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+impl<'de, I, T, E> IntoDeserializer<'de, E> for SeqDeserializer<I, E>
+where
+    I: Iterator<Item = T>,
+    T: IntoDeserializer<'de, E>,
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
     }
 }
 
@@ -1076,6 +1202,17 @@ where
     }
 }
 
+impl<'de, A> IntoDeserializer<'de, A::Error> for SeqAccessDeserializer<A>
+where
+    A: de::SeqAccess<'de>,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// A deserializer that iterates over a map.
@@ -1187,6 +1324,21 @@ where
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct tuple_struct map
         struct enum identifier ignored_any
+    }
+}
+
+impl<'de, I, E> IntoDeserializer<'de, E> for MapDeserializer<'de, I, E>
+where
+    I: Iterator,
+    I::Item: private::Pair,
+    First<I::Item>: IntoDeserializer<'de, E>,
+    Second<I::Item>: IntoDeserializer<'de, E>,
+    E: de::Error,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
     }
 }
 
@@ -1489,6 +1641,17 @@ where
     }
 }
 
+impl<'de, A> IntoDeserializer<'de, A::Error> for MapAccessDeserializer<A>
+where
+    A: de::MapAccess<'de>,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
+    }
+}
+
 impl<'de, A> de::EnumAccess<'de> for MapAccessDeserializer<A>
 where
     A: de::MapAccess<'de>,
@@ -1539,6 +1702,17 @@ where
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+impl<'de, A> IntoDeserializer<'de, A::Error> for EnumAccessDeserializer<A>
+where
+    A: de::EnumAccess<'de>,
+{
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self {
+        self
     }
 }
 
