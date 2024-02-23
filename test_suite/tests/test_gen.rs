@@ -686,7 +686,7 @@ fn test_gen() {
 
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum UntaggedWithBorrow<'a> {
+    pub enum UntaggedWithBorrow<'a> {
         Single(#[serde(borrow)] RelObject<'a>),
         Many(#[serde(borrow)] Vec<RelObject<'a>>),
     }
@@ -843,7 +843,7 @@ pub fn is_zero(n: &u8) -> bool {
     *n == 0
 }
 
-fn vec_first_element<T, S>(vec: &Vec<T>, serializer: S) -> StdResult<S::Ok, S::Error>
+fn vec_first_element<T, S>(vec: &[T], serializer: S) -> StdResult<S::Ok, S::Error>
 where
     T: Serialize,
     S: Serializer,

@@ -27,11 +27,10 @@ fn main() {
         println!("cargo:rustc-cfg=no_relaxed_trait_bounds");
     }
 
-    // Disabled on Emscripten targets before Rust 1.40 since
-    // Emscripten did not support 128-bit integers until Rust 1.40
-    // (https://github.com/rust-lang/rust/pull/65251)
-    if emscripten && minor < 40 {
-        println!("cargo:rustc-cfg=no_integer128");
+    // f32::copysign and f64::copysign stabilized in Rust 1.35.
+    // https://blog.rust-lang.org/2019/05/23/Rust-1.35.0.html#copy-the-sign-of-a-floating-point-number-onto-another
+    if minor < 35 {
+        println!("cargo:rustc-cfg=no_float_copysign");
     }
 
     // Current minimum supported version of serde_derive crate is Rust 1.56.

@@ -10,3 +10,8 @@ members = [
 serde = { path = "serde" }
 # Temorary until https://github.com/serde-rs/test/pull/31 is merged
 serde_test = { git = "https://github.com/Mingun/serde-test", branch = "borrowed-variant-identifiers" }
+
+[workspace.dependencies]
+proc-macro2 = { version = "1.0.74", default-features = false }
+quote = { version = "1.0.35", default-features = false }
+syn = { version = "2.0.46", default-features = false }
